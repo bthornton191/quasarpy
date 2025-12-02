@@ -1,13 +1,15 @@
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
+from typing import List
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
 
 from quasarpy.quasar import DatasetConfig, KrigingConfig, Quasar
+
+PLOT_DIR = Path(__file__).parent / 'plots'
 
 
 def test_initialization(mock_quasar_exe, tmp_path):
@@ -160,6 +162,14 @@ def test_command_generation(mock_quasar_exe, sample_data, tmp_path):
 QUASAR_INSTALLED = 'ODYSSEE_CAE_INSTALLDIR' in os.environ or 'ODYSSEE_SOLVER_INSTALLDIR' in os.environ
 
 
+def y1_func(t, x1, x2):
+    return (2 * x1 + x2) * (1 + 0.5 * t)
+
+
+def y2_func(t, x1, x2):
+    return (3 * x1 - x2) * np.exp(-0.3 * t)
+
+
 @pytest.mark.skipif(not QUASAR_INSTALLED, reason='Quasar not installed')
 def test_quasar_integration():
     """
@@ -181,27 +191,27 @@ def test_quasar_integration():
     # t goes from 0 to 2 in 21 steps
     t_steps = np.linspace(0, 2, 21)
 
-    y_data = {}
-    for label, row in x.iterrows():
-        base = 2 * row['x1'] + row['x2']
-        # Curve: base * (1 + 0.5*t)
-        curve = base * (1 + 0.5 * t_steps)
-        y_data[label] = curve
+    datasets: List[DatasetConfig] = []
+    for i, func in enumerate([y1_func, y2_func]):
+        y_data = {}
+        for label, row in x.iterrows():
+            curve = func(t_steps, row['x1'], row['x2'])
+            y_data[label] = curve
 
-    y = pd.DataFrame(y_data).T
+        # 2. Configure Dataset
+        ds = DatasetConfig(
+            name=f'test_dataset_{i}',
+            data=pd.DataFrame(y_data).T,
+            kriging_config=KrigingConfig(basis_function=2)  # Linear basis function
+        )
 
-    # 2. Configure Datasets
-    ds1 = DatasetConfig(
-        name='test_dataset',
-        data=y,
-        kriging_config=KrigingConfig(basis_function=2)  # Linear basis function
-    )
+        datasets.append(ds)
 
     # 3. Initialize Quasar (auto-detect exe and scripts)
     q = Quasar(keep_work_dir=True)  # Keep work dir for debugging if needed
 
     # 4. Train
-    q.train(x, [ds1])
+    q.train(x, datasets)
 
     # 5. Predict
     X_new = pd.DataFrame({
@@ -212,49 +222,54 @@ def test_quasar_integration():
     results = q.predict(X_new)
 
     # Check results
-    y_pred = results['test_dataset']
+    failures = []
+    for ds, func in zip(datasets, [y1_func, y2_func]):
+        y_pred = results[ds.name]
 
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
 
-    # Plot training data
-    # X-axis: Time (t_steps)
-    # Y-axis: Input parameter x1
-    # Z-axis: Response value
-    for i in range(len(y)):
-        x1_val = x.iloc[i]['x1']
-        # Create arrays for 3D plotting
-        xs = t_steps
-        ys = np.full(xs.shape, x1_val)
-        zs = y.iloc[i].values
-        ax.plot(xs, ys, zs, color='gray', alpha=0.3, linestyle='-', label='Train' if i == 0 else "")
+        # Plot training data
+        # X-axis: Time (t_steps)
+        # Y-axis: Input parameter x1
+        # Z-axis: Response value
+        for i in range(len(x)):
+            x1_val = x.iloc[i]['x1']
+            # Create arrays for 3D plotting
+            ys = np.full(t_steps.shape, x1_val)
+            zs = ds.data.iloc[i].values
+            ax.plot(t_steps, ys, zs, color='gray', alpha=0.3, linestyle='-', label='Train' if i == 0 else "")
 
-    for i in range(len(X_new)):
-        x1_val = X_new.iloc[i]['x1']
+        for i in range(len(X_new)):
+            x1_val = X_new.iloc[i]['x1']
 
-        # Plot prediction
-        xs = t_steps
-        ys = np.full(xs.shape, x1_val)
-        zs_pred = y_pred.iloc[i].values
-        ax.plot(xs, ys, zs_pred, marker='o', markersize=4, label=f'Pred Sample {i}')
+            # Plot prediction
+            ys = np.full(t_steps.shape, x1_val)
+            zs_pred = y_pred.iloc[i].values
+            ax.plot(t_steps, ys, zs_pred, marker='o', markersize=4, label=f'Pred Sample {i}')
 
-        # Plot expected
-        x2 = X_new.iloc[i]['x2']
-        base = 2 * x1_val + x2
-        expected = base * (1 + 0.5 * t_steps)
-        ax.plot(xs, ys, expected, linestyle='--', label=f'Exp Sample {i}')
+            # Plot expected
+            x2 = X_new.iloc[i]['x2']
+            expected = func(t_steps, x1_val, x2)
+            ax.plot(t_steps, ys, expected, linestyle='--', label=f'Exp Sample {i}')
 
-    ax.set_title('Quasar Integration Test: Predictions vs Expected (3D)')
-    ax.set_xlabel('Time (t)')
-    ax.set_ylabel('Input Parameter x1')
-    ax.set_zlabel('Response Value')
-    ax.legend()
-    fig.savefig(Path(__file__).parent / 'quasar_integration_test.png')  # Save figure instead of showing
+        ax.set_title('Quasar Integration Test: Predictions vs Expected (3D)')
+        ax.set_xlabel('Time (t)')
+        ax.set_ylabel('Input Parameter x1')
+        ax.set_zlabel('Response Value')
+        ax.legend()
 
-    for _, row in X_new.iterrows():
-        expected = (2 * row['x1'] + row['x2']) * (1 + 0.5 * t_steps)
-        actual = y_pred.loc[row.name]
-        assert np.allclose(actual, expected, atol=0.01)
+        PLOT_DIR.mkdir(parents=True, exist_ok=True)
+        fig.savefig(PLOT_DIR / f'integration_{ds.name}.png')
+
+        for _, row in X_new.iterrows():
+            expected = func(t_steps, row['x1'], row['x2'])
+            actual = y_pred.loc[row.name].values
+            if not np.allclose(actual, expected, atol=0.01):
+                failures.append({'dataset': ds.name, 'row': row.name, 'actual': actual, 'expected': expected})
+
+    if failures != []:
+        pytest.fail(f'Failures in predictions: {failures}')
 
 
 def test_quasar_init_no_exe():
@@ -337,3 +352,87 @@ def test_predict_mocked(mock_popen, mock_quasar_exe, mock_scripts_dir, sample_da
 
     # Verify subprocess was called
     assert mock_popen.called
+
+
+@pytest.mark.skipif(not QUASAR_INSTALLED, reason='Quasar not installed')
+def test_quasar_validation():
+    """
+    Integration test for the validation feature.
+    Verifies SRMSE behavior across three scenarios:
+    1. Training Data (Should be ~0)
+    2. Unseen Clean Data (Should be small)
+    3. Noisy Data (Should be significant)
+    """
+    # 1. Setup Training Data (Same as test_quasar_integration)
+    X_train = pd.DataFrame({
+        'x1': [1.0, 2.0, 3.0, 4.0, 5.0],
+        'x2': [1.0, 2.0, 1.0, 2.0, 1.0]
+    })
+    t_steps = np.linspace(0, 2, 21)
+
+    y_data_train = {}
+    for i, row in X_train.iterrows():
+        curve = y1_func(t_steps, row['x1'], row['x2'])
+        y_data_train[i] = curve
+    Y_train = pd.DataFrame(y_data_train).T
+
+    ds_name = 'ds_0'
+    ds_train = DatasetConfig(
+        name=ds_name,
+        data=Y_train,
+        kriging_config=KrigingConfig(basis_function=2)  # Linear basis
+    )
+
+    # 2. Train
+    q = Quasar(keep_work_dir=True)
+    q.train(X_train, [ds_train])
+
+    # --- Scenario 1: Validate on Training Data ---
+    # Should be perfect reconstruction
+    val_res_train = q.validate(X_train, [ds_train])
+    summary_train = val_res_train.summary()
+
+    assert summary_train.loc[ds_name, 'SRMSE'] < 1e-6
+    assert summary_train.loc[ds_name, 'RMSE'] < 1e-6
+
+    # --- Scenario 2: Validate on Unseen Clean Data ---
+    X_val = pd.DataFrame({
+        'x1': [1.5, 3.5, 2.5, 4.5],
+        'x2': [1.5, 1.5, 2.5, 0.5]
+    })
+
+    y_data_val_clean = {}
+    for i, row in X_val.iterrows():
+        curve = y1_func(t_steps, row['x1'], row['x2'])
+        y_data_val_clean[i] = curve
+    Y_val_clean = pd.DataFrame(y_data_val_clean).T
+
+    ds_val_clean = DatasetConfig(name=ds_name, data=Y_val_clean)
+    val_res_clean = q.validate(X_val, [ds_val_clean])
+    summary_clean = val_res_clean.summary()
+
+    # Error should be small (interpolation error)
+    assert summary_clean.loc[ds_name, 'SRMSE'] < 0.05
+
+    # --- Scenario 3: Validate on Noisy Data ---
+    y_data_val_noisy = {}
+    noise_std = 0.5
+    np.random.seed(42)
+    for i, row in X_val.iterrows():
+        curve = y1_func(t_steps, row['x1'], row['x2'])
+        curve += np.random.normal(0, noise_std, size=curve.shape)
+        y_data_val_noisy[i] = curve
+    Y_val_noisy = pd.DataFrame(y_data_val_noisy).T
+
+    ds_val_noisy = DatasetConfig(name=ds_name, data=Y_val_noisy)
+    val_res_noisy = q.validate(X_val, [ds_val_noisy])
+    summary_noisy = val_res_noisy.summary()
+
+    # Error should reflect noise
+    assert summary_noisy.loc[ds_name, 'SRMSE'] > 0.05
+
+    # 6. Check HTML export (smoke test)
+    html_path = Path(__file__).parent / 'reports' / 'validation_report.html'
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    val_res_noisy.save_html(str(html_path))
+    assert html_path.exists()

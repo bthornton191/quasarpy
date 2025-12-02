@@ -11,6 +11,9 @@ setup(
     install_requires=[
         "pandas>=1.0.0",
         "numpy>=1.0.0",
+        "plotly>=5.0.0",
+        "ipywidgets>=7.0.0",
+        "anywidget>=0.9.0",
     ],
     package_data={
         "quasarpy": ["qsr_scripts/*.qsr"],

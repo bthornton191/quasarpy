@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
+import numpy as np
 import pandas as pd
+
+from .validation import ValidationResult
 
 
 @dataclass
@@ -244,6 +247,74 @@ class Quasar:
             results[ds.name] = self._read_y_file(self.work_dir / ds.name / 'YN.csv')
 
         return results
+
+    def validate(self, x_val: pd.DataFrame, datasets: List[DatasetConfig]) -> ValidationResult:
+        """
+        Validates the model against a new set of data.
+
+        Calculates the following metrics:
+        - RMSE: Root Mean Square Error
+        - MAE: Mean Absolute Error
+        - Peak Error: Mean absolute difference of peaks
+        - SRMSE: Standardized RMSE ($SRMSE = \\frac{RMSE}{\\sigma_{obs}}$)
+
+        Parameters
+        ----------
+        x_val : pd.DataFrame
+            Validation input parameters.
+        datasets : List[DatasetConfig]
+            List of DatasetConfig objects containing the actual validation data (Y).
+            Note: The solver configuration in these objects is ignored.
+
+        Returns
+        -------
+        ValidationResult
+            Object containing metrics and visualization methods.
+        """
+        # 1. Predict
+        predictions = self.predict(x_val)
+
+        results = {}
+        for ds in datasets:
+            if ds.name not in predictions:
+                continue
+
+            y_pred = predictions[ds.name]
+            y_true = ds.data
+
+            # Calculate metrics
+            # RMSE
+            mse = ((y_pred - y_true) ** 2).mean().mean()
+            rmse = np.sqrt(mse)
+
+            # MAE
+            mae = (y_pred - y_true).abs().mean().mean()
+
+            # Peak Error (Mean absolute difference of peaks)
+            peak_error = (y_pred.max(axis=1) - y_true.max(axis=1)).abs().mean()
+
+            # SRMSE
+            std_obs = y_true.stack().std()
+            if std_obs == 0:
+                srmse = 0.0 if rmse == 0 else np.inf
+            else:
+                srmse = rmse / std_obs
+
+            metrics = {
+                'RMSE': rmse,
+                'MAE': mae,
+                'Peak Error': peak_error,
+                'SRMSE': srmse
+            }
+
+            results[ds.name] = {
+                'metrics': metrics,
+                'y_pred': y_pred,
+                'y_true': y_true,
+                'x_val': x_val
+            }
+
+        return ValidationResult(results)
 
     def _write_x_file(self, df: pd.DataFrame, filename: str):
         """
