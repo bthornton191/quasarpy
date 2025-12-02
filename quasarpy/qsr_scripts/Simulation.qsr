@@ -1,0 +1,213 @@
+#-----------------------------------------------------------------------------------------------------------------------------------------
+# arguments list
+#-----------------------------------------------------------------------------------------------------------------------------------------
+# $args[0]->"WorkingDirPath"         # Path of the Lunar working directory
+# $args[1]->"X_FILE.csv"             # Paramaters database file
+# $args[2]->"VALIDATION_FILE.csv"    # Contents only the validation points enter by the configuration tab
+# $args[3]->"XN_FILE.csv"            # Content new points proposed by the sensitivity tab
+# $args[4]->-1 or -2                 # Flag to generate U / US / VT decomposition files for POD or Clustering operator. = -1 write as binary, = -2 read binary file
+# $args[5]->1 or more                # Specify the number of dataset in your project
+#---------------------------- argument for Dataset #i -------------------------------------------
+# for datset #i datasetOffset-> Global arguments number for project (=6) + Sum of Local arguments number of all previous datasets
+# $args[datasetOffset]->5 or more(<=10)        # Local arguments number for the dataset #i
+# $args[datasetOffset+1]->"datasetName"        # Name of the datasetName
+# $args[datasetOffset+2]->"PATH/Y_FILE.csv"    # Path+Name of the Y CSV file
+# $args[datasetOffset+3]->"datasetName/prefix" # Dataset_Name/Prefix_Name_for_ROM_methods
+# $args[datasetOffset+4]->0                    # Solver ID : 0=POD, 1=Clustering, 2=Kriging, 3=RBF, 4=SVM, 5=ARBF, 6=INVD, 7=Regression, 8=FFT
+# ---- for Solver ID =0 ->POD, =1->Clustering, =8->FFT
+#      $args[datasetOffset+5]->0 or more       # MODE/CLUSTERS/FREQUENCIES values
+#      $args[datasetOffset+6]->0 or more (<=4) # Interpolation methods 0=RBF, 1=KRG, 2=Not used, 3=ARBF, 4=INVD
+#      ---- if Interpolation methods=0 (POD_RBF/CLS_RBF/FFT_RBF)
+#      $args[datasetOffset+7]->0 or more (<=4) # Radial basis function 0=multiquadric, 1=inverse Multiquadric, 2=thin plate spline, 3=gaussian, 4=linear
+#      ---- if Interpolation methods=1 (POD_KRG/CLS_KRG/FFT_KRG)
+#      $args[datasetOffset+7]->0 or more (<=5) # Basis function 0=none, 1=constant, 2=linear, 3=quadratic, 4=cubic, 5=trigonometric
+#      $args[datasetOffset+8]->0 or more (<=4) # Stationarity for kriging method 0=h1, 1=h2, 2=h3, 3=exp, 4=matern32
+#      $args[datasetOffset+9]-> 1.57           # Pulsation for kriging method
+#      $args[datasetOffset+10]-> 0.0           # Nugget effect for kriging method
+#      ---- if Interpolation methods=3 (POD_INVD/CLS_INVD/FFT_INVD)
+#      $args[datasetOffset+7]->3 or more       # Number of Neighboors
+#      $args[datasetOffset+8]->2               # Power
+# ---- for Solver ID =2 ->Kriging
+#      $args[datasetOffset+5]->0 or more (<=5) # Basis function 0=none, 1=constant, 2=linear, 3=quadratic, 4=cubic, 5=trigonometric
+#      $args[datasetOffset+6]->0 or more (<=4) # Stationarity for kriging method 0=h1, 1=h2, 2=h3, 3=exp, 4=matern32
+#      $args[datasetOffset+7]-> 1.57           # Pulsation for kriging method
+#      $args[datasetOffset+8]-> 0.0            # Nugget effect for kriging method
+# ---- for Solver ID =3 ->RBF
+#      $args[datasetOffset+5]->0 or more (<=4) # Radial basis function 0=multiquadric, 1=inverse Multiquadric, 2=thin plate spline, 3=gaussian, 4=linear
+# ---- for Solver ID =4 ->SVM
+#      $args[datasetOffset+5]->0               # kernel value
+#      $args[datasetOffset+6]->0               # param1 polynomial option
+#      $args[datasetOffset+7]->0               # param2 radial option
+# ---- for Solver ID =6 ->INVD
+#      $args[datasetOffset+5]->3 or more       # Number of Neighboors
+#      $args[datasetOffset+6]->2               # Power
+# ---- for Solver ID =7 ->Regression
+#      $args[datasetOffset+5]->1 or 2          # Regression order
+#      $args[datasetOffset+6]->0, 1 or 2          # Normalization type (None, Normalize, Standardize)
+#-----------------------------------------------------------------------------------------------------------------------------------------
+
+import "QuasarMatrix"
+import "QuasarExternal"
+import "CustomSolver.qsr"
+
+function String resName(String baseName, String dir, String dataset)
+	return dir+"/"+dataset+"/"+baseName+".csv"
+end
+
+String[] arguments <-> $args
+
+String WorkingDir=arguments[0]
+
+#Load Csv files for X, Xvalidation and Xn
+Matrix X = loadCsv(arguments[1])
+Matrix XVAL = loadCsv(arguments[2])
+Matrix ALLXN = loadCsv(arguments[3])
+
+int SAVE_FILES = arguments[4].toInt()
+int nbDatasets = arguments[5].toInt()
+
+#concatenation of the data from the Xvalidation file ("VALIDATION_FILE.csv")
+#and the data from the Xn file ("XN_FILE.csv") from the sensitivity tab
+int nbUserXN = ALLXN.h()
+if(ALLXN.h() == 0)
+	ALLXN = XVAL
+else if(XVAL.h() != 0)
+	ALLXN = ALLXN.:XVAL
+end
+
+enum SolverType
+	POD = 0
+	Clustering = 1
+	Kriging = 2
+	RBF = 3
+	SVM = 4
+	ARBF = 5
+	INVD = 6
+	Regression = 7
+	FFT = 8
+	Custom = 99
+end
+
+#index of the first argument of the first dataset
+int datasetOffset = 6
+#index of the first argument of the solver options of the first dataset
+int solverOptions = 11
+
+print("#n------------#n")
+for(i = 0; i < nbDatasets; i++)
+	
+	String datasetName = arguments[datasetOffset+1]
+	String prefix = arguments[datasetOffset+3]
+	#solver for the current dataset
+	SolverType solver = arguments[datasetOffset+4].toInt()
+	print("Computing results of "+datasetName+" with "+solver.toString()+" solver")
+	Matrix YN
+	Matrix Y = loadCsv(arguments[datasetOffset+2])
+	if(solver == SolverType::POD)
+		MODES = arguments[solverOptions].toInt()
+		method = arguments[solverOptions+1].toInt()
+		RDA_FLAG = arguments[solverOptions+2].toInt()
+		if(method == 0)
+			int basisFunction = arguments[solverOptions+3].toInt()
+			double radius = arguments[solverOptions+4].toDouble()
+			YN = ext("interpolator","matrix","pod_rbf",X,Y,ALLXN,basisFunction,radius,SAVE_FILES,0,MODES,0.0,RDA_FLAG,prefix)
+		else if(method == 1)
+			int basisFunction = arguments[solverOptions+3].toInt()
+			int stationarity = arguments[solverOptions+4].toInt()
+			double pulsation = arguments[solverOptions+5].toDouble()
+			double nugget = arguments[solverOptions+6].toDouble()
+			YN = ext("interpolator","matrix","pod_krg",X,Y,ALLXN,basisFunction,stationarity,1,nugget,pulsation,SAVE_FILES,0,MODES,0.0,RDA_FLAG,prefix)
+		else if(method ==3 )
+			YN = ext("interpolator","matrix","pod_arbf",X,Y,ALLXN,0,0.0,SAVE_FILES,0,MODES,0.0,RDA_FLAG,prefix)
+		else if(method == 4)
+			int neighboors = arguments[solverOptions+3].toInt()
+			double power = arguments[solverOptions+4].toDouble()
+			YN = ext("interpolator","matrix","pod_invd",X,Y,ALLXN,neighboors,power,SAVE_FILES,0,MODES,0.0,RDA_FLAG,prefix)
+		end
+	else if(solver == SolverType::Clustering)
+		CLUSTERS = arguments[solverOptions].toInt()
+		method = arguments[solverOptions+1].toInt()
+		RDA_FLAG = arguments[solverOptions+2].toInt()
+		CLS_SAVE_FLAG = -1
+		if(method == 0)
+			int basisFunction = arguments[solverOptions+3].toInt()
+			double radius = arguments[solverOptions+4].toDouble()
+			YN = ext("interpolator","matrix","cls_rbf",X,Y,ALLXN,basisFunction,radius,CLS_SAVE_FLAG,0,CLUSTERS,RDA_FLAG,prefix)
+		else if(method == 1)
+			int basisFunction = arguments[solverOptions+3].toInt()
+			int stationarity = arguments[solverOptions+4].toInt()
+			double pulsation = arguments[solverOptions+5].toDouble()
+			double nugget = arguments[solverOptions+6].toDouble()
+			YN = ext("interpolator","matrix","cls_krg",X,Y,ALLXN,basisFunction,stationarity,1,nugget,pulsation,CLS_SAVE_FLAG,0,CLUSTERS,RDA_FLAG,prefix)
+		else if(method == 3)
+			YN = ext("interpolator","matrix","cls_arbf",X,Y,ALLXN,0,0.0,CLS_SAVE_FLAG,0,CLUSTERS,RDA_FLAG,prefix)
+		else if(method == 4)
+			int neighboors = arguments[solverOptions+3].toInt()
+			double power = arguments[solverOptions+4].toDouble()
+			YN = ext("interpolator","matrix","cls_invd",X,Y,ALLXN,neighboors,power,CLS_SAVE_FLAG,0,CLUSTERS,RDA_FLAG,prefix)
+		end
+	else if(solver == SolverType::FFT)
+		FREQUENCIES = arguments[solverOptions].toInt()
+		method = arguments[solverOptions+1].toInt()
+		RDA_FLAG = arguments[solverOptions+2].toInt()
+		if(method == 0)
+			int basisFunction = arguments[solverOptions+3].toInt()
+			double radius = arguments[solverOptions+4].toDouble()
+			YN = ext("interpolator","matrix","fft_all",X,Y,ALLXN,method+1,basisFunction,radius,1,SAVE_FILES,0,FREQUENCIES,0.0,RDA_FLAG,prefix)
+		else if(method == 1)
+			int basisFunction = arguments[solverOptions+3].toInt()
+			int stationarity = arguments[solverOptions+4].toInt()
+			double pulsation = arguments[solverOptions+5].toDouble()
+			double nugget = arguments[solverOptions+6].toDouble()
+			YN = ext("interpolator","matrix","fft_all",X,Y,ALLXN,method+1,basisFunction,stationarity,1,nugget,pulsation,SAVE_FILES,0,FREQUENCIES,0.0,RDA_FLAG,prefix)
+		else if(method == 3)
+			YN = ext("interpolator","matrix","fft_all",X,Y,ALLXN,method+1,0,0.0,SAVE_FILES,0,FREQUENCIES,0.0,RDA_FLAG,prefix)
+		else if(method == 4)
+			int neighboors = arguments[solverOptions+3].toInt()
+			double power = arguments[solverOptions+4].toDouble()
+			YN = ext("interpolator","matrix","fft_all",X,Y,ALLXN,method+1,neighboors,power,SAVE_FILES,0,FREQUENCIES,0.0,RDA_FLAG,prefix)
+		end
+	else if(solver == SolverType::Kriging)
+		int basisFunction = arguments[solverOptions].toInt()
+		int stationarity = arguments[solverOptions+1].toInt()
+		double pulsation = arguments[solverOptions+2].toDouble()
+		double nugget = arguments[solverOptions+3].toDouble()
+		YN = kriging(X,Y,ALLXN,basisFunction,stationarity,1,nugget,pulsation)
+	else if(solver == SolverType::RBF)
+		int basisFunction = arguments[solverOptions].toInt()
+		double radius = arguments[solverOptions+1].toDouble()
+		YN = ext("interpolator","matrix","rbf",X,Y,ALLXN,basisFunction,radius,1)
+	else if(solver == SolverType::SVM)
+		String type = arguments[solverOptions]
+		int kernel = arguments[solverOptions+1].toInt()
+		double s1 = arguments[solverOptions+2].toDouble()
+		double s2 = arguments[solverOptions+3].toDouble()
+		double gamma = arguments[solverOptions+4].toDouble()
+		YN = ext("mining","svm",type,X,Y,ALLXN,kernel,s1,s2,gamma,SAVE_FILES,prefix)
+	else if(solver == SolverType::ARBF)
+		YN = ext("interpolator","matrix","arbf",X,Y,ALLXN,0,0.0,0)
+	else if(solver == SolverType::INVD)
+		int neighboors = arguments[solverOptions].toInt()
+		double power = arguments[solverOptions+1].toDouble()
+		YN = ext("interpolator","matrix","forecast",X,Y,ALLXN,5,neighboors,power)
+	else if(solver == SolverType::Regression)
+		int order = arguments[solverOptions].toInt()
+		int norm = arguments[solverOptions+1].toInt()
+		YN = ext("interpolator","matrix","forecast",X,Y,ALLXN,0,norm,order,0)
+	else if(solver == SolverType::Custom)
+		int endOptions = datasetOffset+arguments[datasetOffset].toInt()
+		YN = CustomSolver(X, Y, ALLXN, datasetName, prefix, SAVE_FILES, arguments[solverOptions..endOptions])
+	end
+	
+	print("Saving results of "+datasetName)
+	#saving results associated with the XN from the sensibility tab (X_FILE.csv)
+	YN.submat(0,0,Y.w(),nbUserXN).saveCsv(resName("YN", WorkingDir, datasetName),"%16.8E")
+	#saving results associated with the Xvalidation given in the project configuration window (VALIDATION_FILE.csv)
+	YN.submat(0,nbUserXN,Y.w(),ALLXN.h()-nbUserXN).saveCsv(resName("YN_VALIDATION",WorkingDir, datasetName),"%16.8E")
+	
+	#index of the first argument of the next dataset
+	solverOptions += arguments[datasetOffset].toInt()
+	#index of the first argument of the solver options of the next dataset
+	datasetOffset += arguments[datasetOffset].toInt()
+	print("#n------------#n")
+end

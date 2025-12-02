@@ -1,0 +1,36 @@
+import "QuasarMatrix"
+import "QuasarExternal"
+#you can append additional imports if needed here
+
+#-----------------------------------------------------------------------------------------------------------------------------------------
+#	You can implement your own solver in this function
+#	
+#	Parameters :
+#		- X : X database matrix
+#		- Y : Y database matrix for the current dataset
+#		- XN : Matrix of DOE parameters for cases to predict
+#		- datasetName : name of current dataset
+#		- prefix : prefix that should be used for naming your learning database files
+#		- SAVE_FILES : -1 => create learning database, -2 => read learning database
+#		- options : array of additional arguments for your solver
+#
+#	Returns : Matrix containing the predicted results for each cases in Xn parameter
+#
+#	Note : the X file, Y file and XN file are already loaded respectively in the X, Y and XN variables
+#-----------------------------------------------------------------------------------------------------------------------------------------
+
+function Matrix CustomSolver(Matrix X, Matrix Y, Matrix XN, String datasetName, String prefix, int SAVE_FILES, String[] options)
+	#script to compute the predictions
+	#-- exemple --
+	# int MODES = options[0].toInt()
+	# int basisFunction = options[1].toInt()
+	# double radius = options[2].toDouble()
+	# YN = ext("interpolator","matrix","pod_rbf",X,Y,XN,basisFunction,radius,SAVE_FILES,0,MODES,0.0,RDA_FLAG,prefix)
+	# return YN
+	#-------------
+	# /!\ delete the three next lines if you implement your own solver /!\
+	print("error : the custom solver is not implemented#nYou can implement your own solver in the file CustomSolver.qsr")
+	exit(1)
+	return Matrix(0, 0)
+	#---------------
+end
