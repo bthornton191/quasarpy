@@ -1,5 +1,26 @@
-.pytest_cache
-.vscode
-env
-__pycache__
-test/quasar_integration_test.png
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# IDE/Editor
+.vscode/
+.idea/
+
+# Testing
+.pytest_cache/
+test/plots/
+test/reports/
+
+# Generated files
+validation_report.html
+
+# Quasar working directories (temp files)
+*.qsr.log
