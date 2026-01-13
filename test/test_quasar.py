@@ -272,6 +272,77 @@ def test_quasar_integration():
         pytest.fail(f'Failures in predictions: {failures}')
 
 
+@pytest.mark.skipif(not QUASAR_INSTALLED, reason='Quasar not installed')
+def test_quasar_predict_with_relative_work_dir():
+    """
+    Integration test verifying that Quasar works with a relative path for work_dir.
+
+    This test is skipped if the Quasar environment variables are not set.
+    It performs a full training and prediction cycle using a relative path
+    for the working directory to ensure path handling is correct.
+    """
+    import shutil
+
+    # Use a relative path for work_dir
+    relative_work_dir = Path('test_relative_work_dir')
+
+    # Clean up if it exists from a previous run
+    if relative_work_dir.exists():
+        shutil.rmtree(relative_work_dir)
+
+    try:
+        # 1. Setup Data
+        x = pd.DataFrame({
+            'x1': [1.0, 2.0, 3.0, 4.0, 5.0],
+            'x2': [1.0, 2.0, 1.0, 2.0, 1.0]
+        })
+
+        t_steps = np.linspace(0, 2, 21)
+
+        y_data = {}
+        for label, row in x.iterrows():
+            curve = y1_func(t_steps, row['x1'], row['x2'])
+            y_data[label] = curve
+
+        ds = DatasetConfig(
+            name='relative_path_test',
+            data=pd.DataFrame(y_data).T,
+            kriging_config=KrigingConfig(basis_function=2)
+        )
+
+        # 2. Initialize Quasar with relative path
+        q = Quasar(work_dir=relative_work_dir, keep_work_dir=True)
+
+        # Verify the work_dir was created
+        assert relative_work_dir.exists(), "Relative work_dir should be created"
+
+        # 3. Train
+        q.train(x, [ds])
+
+        # 4. Predict
+        X_new = pd.DataFrame({
+            'x1': [1.5, 3.5],
+            'x2': [1.5, 1.5]
+        })
+
+        results = q.predict(X_new)
+
+        # 5. Verify results
+        assert 'relative_path_test' in results
+        y_pred = results['relative_path_test']
+
+        for _, row in X_new.iterrows():
+            expected = y1_func(t_steps, row['x1'], row['x2'])
+            actual = y_pred.loc[row.name].values
+            assert np.allclose(actual, expected, atol=0.01), \
+                f"Prediction mismatch for row {row.name}: {actual} vs {expected}"
+
+    finally:
+        # Clean up
+        if relative_work_dir.exists():
+            shutil.rmtree(relative_work_dir)
+
+
 def test_quasar_init_no_exe():
     """
     Test initialization failure when Quasar executable is missing.

@@ -160,7 +160,7 @@ class Quasar:
             self.work_dir = Path(tempfile.mkdtemp())
             self._temp_dir = True
         else:
-            self.work_dir = Path(work_dir)
+            self.work_dir = Path(work_dir).absolute()
             self.work_dir.mkdir(parents=True, exist_ok=True)
             self._temp_dir = False
 
