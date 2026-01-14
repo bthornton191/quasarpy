@@ -284,14 +284,13 @@ class Quasar:
 
             # Calculate metrics
             # RMSE
-            mse = ((y_pred - y_true) ** 2).mean().mean()
+            mse = ((y_pred.values - y_true.values) ** 2).mean().mean()
             rmse = np.sqrt(mse)
 
             # MAE
-            mae = (y_pred - y_true).abs().mean().mean()
-
+            mae = np.abs(y_pred.values - y_true.values).mean().mean()
             # Peak Error (Mean absolute difference of peaks)
-            peak_error = (y_pred.max(axis=1) - y_true.max(axis=1)).abs().mean()
+            peak_error = np.abs(y_pred.max(axis=1).values - y_true.max(axis=1).values).mean()
 
             # SRMSE
             std_obs = y_true.stack().std()

@@ -42,6 +42,22 @@ class ValidationResult:
             data.append(row)
         return pd.DataFrame(data).set_index('Dataset')
 
+    def _is_scalar(self, dataset_name: str) -> bool:
+        """
+        Check if a dataset contains scalar values (single point per sample).
+
+        Parameters
+        ----------
+        dataset_name : str
+            Name of the dataset to check.
+
+        Returns
+        -------
+        bool
+            True if the dataset has only one column (scalar), False otherwise (curve).
+        """
+        return self.results[dataset_name]['y_true'].shape[1] == 1
+
     def dashboard(self):
         """
         Displays an interactive Jupyter dashboard.
@@ -96,7 +112,11 @@ class ValidationResult:
             height=500
         )
 
+        # Container for curve_fig to control visibility
+        curve_container = widgets.Box([curve_fig], layout=widgets.Layout(display='block'))
+
         def update_charts(dataset_name, sample_idx=0):
+            is_scalar = self._is_scalar(dataset_name)
             res = self.results[dataset_name]
             y_pred = res['y_pred']
             y_true = res['y_true']
@@ -152,23 +172,30 @@ class ValidationResult:
                     x0=min_val, y0=min_val, x1=max_val, y1=max_val
                 )])
 
-            # 2. Update Curve Plot
-            update_curve_plot(dataset_name, sample_idx)
+            # 2. Update Curve Plot (only for non-scalar datasets)
+            if is_scalar:
+                curve_container.layout.display = 'none'
+            else:
+                curve_container.layout.display = 'block'
+                update_curve_plot(dataset_name, sample_idx)
 
             # Update Parity Plot Title with Global SRMSE
             srmse_pct = res['metrics'].get('SRMSE', 0) * 100
             parity_fig.update_layout(title=f"Parity Plot (Global SRMSE: {srmse_pct:.2f}%)")
 
-            # Re-attach click callback to the new trace
-            parity_fig.data[0].on_click(on_parity_click)
+            # Re-attach click callback to the new trace (only useful for curve datasets)
+            if not is_scalar:
+                parity_fig.data[0].on_click(on_parity_click)
 
         def update_curve_plot(dataset_name, sample_idx):
             res = self.results[dataset_name]
-            y_pred_sample = res['y_pred'].iloc[sample_idx]
-            y_true_sample = res['y_true'].iloc[sample_idx]
+            y_pred: pd.DataFrame = res['y_pred']
+            y_true: pd.DataFrame = res['y_true']
+            y_pred_sample: pd.Series = y_pred.iloc[sample_idx]
+            y_true_sample: pd.Series = y_true.iloc[sample_idx]
 
             # Calculate Curve-specific SRMSE
-            rmse_curve = np.sqrt(np.mean((y_pred_sample - y_true_sample) ** 2))
+            rmse_curve = np.sqrt(np.mean((y_pred_sample.values - y_true_sample.values) ** 2))
             std_curve = np.std(y_true_sample)
             if std_curve == 0:
                 srmse_curve = 0.0 if rmse_curve == 0 else np.inf
@@ -193,6 +220,9 @@ class ValidationResult:
                 update_charts(change['new'])
 
         def on_parity_click(trace, points, selector):
+            # Skip for scalar datasets - no curve to display
+            if self._is_scalar(ds_dropdown.value):
+                return
             if points.point_inds:
                 # Get the sample index from customdata
                 # points.point_inds[0] gives the index in the flattened array
@@ -209,7 +239,8 @@ class ValidationResult:
         # Display
         ui = widgets.VBox([
             ds_dropdown,
-            widgets.HBox([parity_fig, curve_fig])
+            widgets.HBox([parity_fig, curve_container],
+                         layout=widgets.Layout(justify_content='center'))
         ])
         display(ui)
 
@@ -227,6 +258,9 @@ class ValidationResult:
         dataset_names = list(self.results.keys())
         if not dataset_names:
             return
+
+        # Track which datasets are scalar vs curve
+        is_scalar_list = [self._is_scalar(ds_name) for ds_name in dataset_names]
 
         # 1. Create Parity Figure
         fig_parity = go.Figure()
@@ -323,6 +357,12 @@ class ValidationResult:
         for i, ds_name in enumerate(dataset_names):
             options_html += f'<option value="{i}">{ds_name}</option>'
 
+        # Generate JavaScript array for scalar dataset flags
+        is_scalar_js = str(is_scalar_list).lower()  # Convert Python list to JS array format
+
+        # Determine initial curve plot visibility
+        initial_curve_display = 'none' if is_scalar_list[0] else 'block'
+
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -360,9 +400,11 @@ class ValidationResult:
             </div>
             <div class="container">
                 <div class="plot-div">{div_parity}</div>
-                <div class="plot-div">{div_curve}</div>
+                <div class="plot-div" id="curve_container" style="display: {initial_curve_display};">{div_curve}</div>
             </div>
             <script>
+                var isScalar = {is_scalar_js};
+                
                 function updatePlots(idx) {{
                     idx = parseInt(idx);
                     var n_datasets = {len(dataset_names)};
@@ -379,6 +421,10 @@ class ValidationResult:
 
                     Plotly.restyle('parity_plot', {{visible: vis_parity}});
                     Plotly.restyle('curve_plot', {{visible: vis_curve}});
+                    
+                    // Toggle curve container visibility based on dataset type
+                    var curveContainer = document.getElementById('curve_container');
+                    curveContainer.style.display = isScalar[idx] ? 'none' : 'block';
                 }}
             </script>
         </body>
