@@ -57,6 +57,23 @@ Run [demo.ipynb](../demo.ipynb) for interactive exploration with validation dash
 - **ODYSSEE CAE**: Required for actual predictions. Set `ODYSSEE_CAE_INSTALLDIR` or `ODYSSEE_SOLVER_INSTALLDIR` environment variable
 - Core: `pandas`, `numpy`, `plotly`, `ipywidgets`
 
+## Code Style
+
+### String Quotes
+- Use **single quotes** (`'`) for all strings
+- Use **double quotes** (`"`) only for:
+  1. Docstrings (triple-quoted `"""`)
+  2. Nested quotes where single quotes would require escaping
+
+```python
+# Good
+name = 'my_dataset'
+message = 'He said "hello"'
+
+# Bad
+name = "my_dataset"
+```
+
 ## Common Tasks
 
 ### Adding a New Solver Type

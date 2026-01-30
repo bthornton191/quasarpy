@@ -24,3 +24,4 @@ validation_report.html
 
 # Quasar working directories (temp files)
 *.qsr.log
+/test/reports/validation_report.html

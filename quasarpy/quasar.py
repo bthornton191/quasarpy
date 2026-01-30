@@ -10,8 +10,9 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
-from .validation import ValidationResult
+from .validation import LearningCurveResult, ValidationResult
 
 
 @dataclass
@@ -314,6 +315,107 @@ class Quasar:
             }
 
         return ValidationResult(results)
+
+    def learning_curve(
+        self,
+        x: pd.DataFrame,
+        datasets: List[DatasetConfig],
+        x_val: pd.DataFrame,
+        val_datasets: List[DatasetConfig],
+        n_slices: int = 10,
+        store_predictions: bool = True
+    ) -> LearningCurveResult:
+        """
+        Performs iterative validation over increasing training dataset sizes.
+
+        This method trains the model on progressively larger subsets of the
+        training data and evaluates performance on a fixed validation set,
+        enabling analysis of how model accuracy improves with more training data.
+
+        Parameters
+        ----------
+        x : pd.DataFrame
+            Full training input parameters (DOE).
+        datasets : List[DatasetConfig]
+            List of DatasetConfig objects containing full training data.
+        x_val : pd.DataFrame
+            Validation input parameters (held constant across all slices).
+        val_datasets : List[DatasetConfig]
+            List of DatasetConfig objects containing validation data (Y values).
+        n_slices : int, optional
+            Number of slices to divide the training data into. Default is 10.
+            For example, with 100 samples and n_slices=10, training sizes will
+            be [10, 20, 30, ..., 100].
+        store_predictions : bool, optional
+            If True, stores y_pred and y_true for each training size.
+            If False, only stores metrics (lower memory). Default is True.
+
+        Returns
+        -------
+        LearningCurveResult
+            Object containing metrics for each training size with visualization
+            methods including summary(), plot(), dashboard(), and save_html().
+
+        Examples
+        --------
+        >>> q = Quasar()
+        >>> lc_result = q.learning_curve(
+        ...     x=X_train,
+        ...     datasets=[ds_train],
+        ...     x_val=X_val,
+        ...     val_datasets=[ds_val],
+        ...     n_slices=5
+        ... )
+        >>> print(lc_result.summary())
+        >>> lc_result.plot('SRMSE').show()
+        >>> lc_result.dashboard()
+        """
+        n_samples = len(x)
+        slice_size = n_samples // n_slices
+
+        if slice_size == 0:
+            raise ValueError(
+                f'n_slices ({n_slices}) is larger than the number of samples ({n_samples}). '
+                f'Reduce n_slices or provide more training data.'
+            )
+
+        # Compute training sizes: [slice_size, 2*slice_size, ..., n_slices*slice_size]
+        train_sizes = [slice_size * i for i in range(1, n_slices + 1)]
+
+        # Initialize results structure: {dataset_name: {train_size: {...}}}
+        all_results: Dict[str, Dict[int, Dict]] = {ds.name: {} for ds in val_datasets}
+
+        for size in tqdm(train_sizes, desc='Learning Curve', unit='slice'):
+            # Subset training data
+            x_subset = x.iloc[:size]
+            datasets_subset = [
+                DatasetConfig(
+                    name=ds.name,
+                    data=ds.data.iloc[:size],
+                    solver_id=ds.solver_id,
+                    kriging_config=ds.kriging_config
+                )
+                for ds in datasets
+            ]
+
+            # Train with subset
+            self.train(x_subset, datasets_subset)
+
+            # Validate
+            val_result = self.validate(x_val, val_datasets)
+
+            # Store results for each dataset
+            for ds_name, res in val_result.results.items():
+                if store_predictions:
+                    all_results[ds_name][size] = res
+                else:
+                    # Only store metrics and x_val
+                    all_results[ds_name][size] = {
+                        'metrics': res['metrics'],
+                        'x_val': res['x_val']
+                    }
+
+        return LearningCurveResult(all_results)
 
     def _write_x_file(self, df: pd.DataFrame, filename: str):
         """

@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -432,4 +432,347 @@ class ValidationResult:
         """
 
         with open(filename, "w", encoding="utf-8") as f:
+            f.write(html_content)
+
+
+class LearningCurveResult:
+    """
+    Container for learning curve results with visualization capabilities.
+
+    Stores validation metrics for each training size, enabling analysis of
+    how model performance improves with increasing training data.
+    """
+
+    def __init__(self, results: Dict[str, Dict[int, Dict]]):
+        """
+        Parameters
+        ----------
+        results : Dict[str, Dict[int, Dict]]
+            Dictionary containing learning curve data for each dataset.
+            Structure:
+            {
+                'dataset_name': {
+                    train_size: {
+                        'metrics': {'RMSE': float, 'MAE': float, ...},
+                        'y_pred': pd.DataFrame (optional),
+                        'y_true': pd.DataFrame (optional),
+                        'x_val': pd.DataFrame
+                    },
+                    ...
+                }
+            }
+        """
+        self.results = results
+
+    @property
+    def dataset_names(self) -> List[str]:
+        """Returns list of dataset names."""
+        return list(self.results.keys())
+
+    @property
+    def train_sizes(self) -> List[int]:
+        """Returns list of training sizes (from first dataset)."""
+        if not self.results:
+            return []
+        first_ds = next(iter(self.results.values()))
+        return sorted(first_ds.keys())
+
+    @property
+    def metric_names(self) -> List[str]:
+        """Returns list of metric names."""
+        if not self.results:
+            return []
+        first_ds = next(iter(self.results.values()))
+        if not first_ds:
+            return []
+        first_size = next(iter(first_ds.values()))
+        return list(first_size['metrics'].keys())
+
+    def summary(self) -> pd.DataFrame:
+        """
+        Returns a summary DataFrame of metrics for all datasets and training sizes.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with MultiIndex (Dataset, TrainSize) and metric columns.
+        """
+        data = []
+        for ds_name, sizes_dict in self.results.items():
+            for train_size, res in sizes_dict.items():
+                row = {'Dataset': ds_name, 'TrainSize': train_size}
+                row.update(res['metrics'])
+                data.append(row)
+        return pd.DataFrame(data).set_index(['Dataset', 'TrainSize'])
+
+    def plot(self, metric: str = 'SRMSE') -> go.Figure:
+        """
+        Creates a learning curve plot for the specified metric.
+
+        Parameters
+        ----------
+        metric : str, optional
+            The metric to plot. Default is 'SRMSE'.
+
+        Returns
+        -------
+        go.Figure
+            Plotly figure with training size on X-axis and metric on Y-axis.
+        """
+        fig = go.Figure()
+
+        colors = sample_colorscale(
+            'Turbo',
+            [i / max(1, len(self.dataset_names) - 1) for i in range(len(self.dataset_names))]
+        )
+
+        for i, ds_name in enumerate(self.dataset_names):
+            sizes = []
+            values = []
+            for train_size in self.train_sizes:
+                if train_size in self.results[ds_name]:
+                    sizes.append(train_size)
+                    values.append(self.results[ds_name][train_size]['metrics'][metric])
+
+            fig.add_trace(go.Scatter(
+                x=sizes,
+                y=values,
+                mode='lines+markers',
+                name=ds_name,
+                line=dict(color=colors[i]),
+                marker=dict(size=8)
+            ))
+
+        fig.update_layout(
+            title=f'Learning Curve: {metric}',
+            xaxis_title='Training Size',
+            yaxis_title=metric,
+            yaxis=dict(exponentformat='e'),
+            hovermode='x unified',
+            width=700,
+            height=500
+        )
+
+        return fig
+
+    def dashboard(self):
+        """
+        Displays an interactive Jupyter dashboard.
+
+        Features:
+        - Dataset selection dropdown (multi-select).
+        - Metric selection dropdown.
+        - Learning curve plot that updates on selection changes.
+        """
+        if not self.dataset_names:
+            print('No learning curve results to display.')
+            return
+
+        # Widgets
+        ds_select: widgets.SelectMultiple = widgets.SelectMultiple(
+            options=self.dataset_names,
+            value=tuple(self.dataset_names),
+            description='Datasets:',
+            rows=min(5, len(self.dataset_names))
+        )
+
+        metric_dropdown: widgets.Dropdown = widgets.Dropdown(
+            options=self.metric_names,
+            value='SRMSE' if 'SRMSE' in self.metric_names else self.metric_names[0],
+            description='Metric:'
+        )
+
+        # Figure
+        fig: go.FigureWidget = go.FigureWidget()
+        fig.update_layout(
+            title='Learning Curve',
+            xaxis_title='Training Size',
+            yaxis_title='Metric',
+            hovermode='x unified',
+            width=700,
+            height=500
+        )
+
+        def update_plot(*args):
+            selected_datasets = list(ds_select.value)
+            metric = metric_dropdown.value
+
+            colors = sample_colorscale(
+                'Turbo',
+                [i / max(1, len(selected_datasets) - 1) for i in range(len(selected_datasets))]
+            )
+
+            with fig.batch_update():
+                fig.data = []
+                for i, ds_name in enumerate(selected_datasets):
+                    sizes = []
+                    values = []
+                    for train_size in self.train_sizes:
+                        if train_size in self.results[ds_name]:
+                            sizes.append(train_size)
+                            values.append(self.results[ds_name][train_size]['metrics'][metric])
+
+                    fig.add_trace(go.Scatter(
+                        x=sizes,
+                        y=values,
+                        mode='lines+markers',
+                        name=ds_name,
+                        line=dict(color=colors[i] if len(selected_datasets) > 1 else 'blue'),
+                        marker=dict(size=8)
+                    ))
+
+                fig.update_layout(
+                    title=f"Learning Curve: {metric}",
+                    yaxis_title=metric
+                )
+
+        # Callbacks
+        ds_select.observe(update_plot, names='value')
+        metric_dropdown.observe(update_plot, names='value')
+
+        # Initialize
+        update_plot()
+
+        # Layout
+        controls = widgets.VBox([ds_select, metric_dropdown])
+        ui = widgets.HBox([controls, fig], layout=widgets.Layout(justify_content='center'))
+        display(ui)
+
+    def save_html(self, filename: str):
+        """
+        Exports the learning curve results to an HTML file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output HTML file.
+        """
+        import plotly.io as pio
+
+        if not self.dataset_names:
+            return
+
+        # Create figure with all datasets and metrics
+        fig = go.Figure()
+
+        colors = sample_colorscale(
+            'Turbo',
+            [i / max(1, len(self.dataset_names) - 1) for i in range(len(self.dataset_names))]
+        )
+
+        # Add traces for each dataset and metric combination
+        # Structure: for each metric, for each dataset -> one trace
+        for metric_idx, metric in enumerate(self.metric_names):
+            for ds_idx, ds_name in enumerate(self.dataset_names):
+                sizes = []
+                values = []
+                for train_size in self.train_sizes:
+                    if train_size in self.results[ds_name]:
+                        sizes.append(train_size)
+                        values.append(self.results[ds_name][train_size]['metrics'][metric])
+
+                fig.add_trace(go.Scatter(
+                    x=sizes,
+                    y=values,
+                    mode='lines+markers',
+                    name=ds_name,
+                    line=dict(color=colors[ds_idx]),
+                    marker=dict(size=8),
+                    visible=(metric_idx == 0),  # Only first metric visible initially
+                    showlegend=(metric_idx == 0)
+                ))
+
+        fig.update_layout(
+            title=f'Learning Curve: {self.metric_names[0]}',
+            xaxis_title='Training Size',
+            yaxis_title=self.metric_names[0],
+            yaxis=dict(exponentformat='e'),
+            hovermode='x unified',
+            margin=dict(l=20, r=20, t=60, b=20)
+        )
+
+        # Generate HTML
+        div_plot = pio.to_html(fig, full_html=False, include_plotlyjs='cdn', div_id='learning_curve_plot')
+
+        # Metric dropdown options
+        metric_options_html = ""
+        for i, metric in enumerate(self.metric_names):
+            metric_options_html += f'<option value="{i}">{metric}</option>'
+
+        n_datasets = len(self.dataset_names)
+        n_metrics = len(self.metric_names)
+        metric_names_js = str(self.metric_names)
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Learning Curve Report</title>
+            <style>
+                body {{ font-family: sans-serif; margin: 0; padding: 20px; }}
+                .controls {{ margin-bottom: 20px; }}
+                .controls select {{ margin-right: 20px; }}
+                .plot-container {{
+                    display: flex;
+                    justify-content: center;
+                }}
+                .plot-div {{
+                    width: 100%;
+                    max-width: 900px;
+                    height: 500px;
+                    border: 1px solid #ddd;
+                    border-radius: 5px;
+                    padding: 10px;
+                }}
+            </style>
+        </head>
+        <body>
+            <h1>Learning Curve Report</h1>
+            <div class="controls">
+                <label for="metric-select">Select Metric:</label>
+                <select id="metric-select" onchange="updatePlot(this.value)">
+                    {metric_options_html}
+                </select>
+            </div>
+            <div class="plot-container">
+                <div class="plot-div">{div_plot}</div>
+            </div>
+            <script>
+                var metricNames = {metric_names_js};
+                var nDatasets = {n_datasets};
+                var nMetrics = {n_metrics};
+                
+                function updatePlot(metricIdx) {{
+                    metricIdx = parseInt(metricIdx);
+                    
+                    // Each metric has nDatasets traces
+                    var totalTraces = nDatasets * nMetrics;
+                    var visibility = new Array(totalTraces).fill(false);
+                    var showLegend = new Array(totalTraces).fill(false);
+                    
+                    // Show traces for selected metric
+                    for (var i = 0; i < nDatasets; i++) {{
+                        var traceIdx = metricIdx * nDatasets + i;
+                        visibility[traceIdx] = true;
+                        showLegend[traceIdx] = true;
+                    }}
+                    
+                    Plotly.restyle('learning_curve_plot', {{
+                        visible: visibility,
+                        showlegend: showLegend
+                    }});
+                    
+                    Plotly.relayout('learning_curve_plot', {{
+                        title: 'Learning Curve: ' + metricNames[metricIdx],
+                        'yaxis.title': metricNames[metricIdx]
+                    }});
+                }}
+            </script>
+        </body>
+        </html>
+        """
+
+        with open(filename, 'w', encoding='utf-8') as f:
             f.write(html_content)

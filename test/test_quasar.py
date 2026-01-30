@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from quasarpy.quasar import DatasetConfig, KrigingConfig, Quasar
+from quasarpy.validation import LearningCurveResult
 
 PLOT_DIR = Path(__file__).parent / 'plots'
 
@@ -507,3 +508,218 @@ def test_quasar_validation():
     html_path.parent.mkdir(parents=True, exist_ok=True)
     val_res_noisy.save_html(str(html_path))
     assert html_path.exists()
+
+
+# ============================================================================
+# Learning Curve Tests
+# ============================================================================
+
+def test_learning_curve_train_sizes_calculation():
+    """
+    Unit test for verifying train_sizes are computed correctly from n_slices.
+    """
+    # With 100 samples and n_slices=10, expect [10, 20, ..., 100]
+    n_samples = 100
+    n_slices = 10
+    slice_size = n_samples // n_slices
+    expected = [slice_size * i for i in range(1, n_slices + 1)]
+
+    assert expected == [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+
+    # With 50 samples and n_slices=5, expect [10, 20, 30, 40, 50]
+    n_samples = 50
+    n_slices = 5
+    slice_size = n_samples // n_slices
+    expected = [slice_size * i for i in range(1, n_slices + 1)]
+
+    assert expected == [10, 20, 30, 40, 50]
+
+    # With 25 samples and n_slices=4, expect [6, 12, 18, 24]
+    n_samples = 25
+    n_slices = 4
+    slice_size = n_samples // n_slices
+    expected = [slice_size * i for i in range(1, n_slices + 1)]
+
+    assert expected == [6, 12, 18, 24]
+
+
+def test_learning_curve_result_summary():
+    """
+    Unit test for LearningCurveResult.summary() method.
+    """
+    # Create mock results structure
+    results = {
+        'dataset_1': {
+            10: {'metrics': {'RMSE': 1.0, 'SRMSE': 0.5}, 'x_val': pd.DataFrame()},
+            20: {'metrics': {'RMSE': 0.8, 'SRMSE': 0.4}, 'x_val': pd.DataFrame()},
+        },
+        'dataset_2': {
+            10: {'metrics': {'RMSE': 2.0, 'SRMSE': 0.6}, 'x_val': pd.DataFrame()},
+            20: {'metrics': {'RMSE': 1.5, 'SRMSE': 0.45}, 'x_val': pd.DataFrame()},
+        }
+    }
+
+    lc_result = LearningCurveResult(results)
+
+    # Test summary
+    summary = lc_result.summary()
+    assert summary.index.names == ['Dataset', 'TrainSize']
+    assert 'RMSE' in summary.columns
+    assert 'SRMSE' in summary.columns
+    assert summary.loc[('dataset_1', 10), 'RMSE'] == 1.0
+    assert summary.loc[('dataset_2', 20), 'SRMSE'] == 0.45
+
+    # Test properties
+    assert lc_result.dataset_names == ['dataset_1', 'dataset_2']
+    assert lc_result.train_sizes == [10, 20]
+    assert 'RMSE' in lc_result.metric_names
+    assert 'SRMSE' in lc_result.metric_names
+
+
+def test_learning_curve_result_plot():
+    """
+    Unit test for LearningCurveResult.plot() method.
+    """
+    results = {
+        'dataset_1': {
+            10: {'metrics': {'RMSE': 1.0, 'SRMSE': 0.5}, 'x_val': pd.DataFrame()},
+            20: {'metrics': {'RMSE': 0.8, 'SRMSE': 0.4}, 'x_val': pd.DataFrame()},
+            30: {'metrics': {'RMSE': 0.6, 'SRMSE': 0.3}, 'x_val': pd.DataFrame()},
+        }
+    }
+
+    lc_result = LearningCurveResult(results)
+    fig = lc_result.plot('SRMSE')
+
+    # Check that figure was created with correct data
+    assert len(fig.data) == 1  # One trace for dataset_1
+    assert fig.data[0].x == (10, 20, 30)
+    assert fig.data[0].y == (0.5, 0.4, 0.3)
+    assert fig.layout.title.text == "Learning Curve: SRMSE"
+
+
+@pytest.mark.skipif(not QUASAR_INSTALLED, reason='Quasar not installed')
+def test_learning_curve_integration():
+    """
+    Integration test for learning_curve feature.
+    Verifies that SRMSE improves (decreases) as training size increases.
+    Tests with two datasets to verify multi-dataset support in dashboard.
+    """
+    # Generate larger training dataset for meaningful learning curve
+    np.random.seed(42)
+    n_train = 30  # 30 training samples
+
+    X_train = pd.DataFrame({
+        'x1': np.random.uniform(1, 5, n_train),
+        'x2': np.random.uniform(0.5, 2.5, n_train)
+    })
+
+    t_steps = np.linspace(0, 2, 21)
+
+    # Generate training curves for both datasets
+    y_data_train_1 = {}
+    y_data_train_2 = {}
+    for i, row in X_train.iterrows():
+        y_data_train_1[i] = y1_func(t_steps, row['x1'], row['x2'])
+        y_data_train_2[i] = y2_func(t_steps, row['x1'], row['x2'])
+    Y_train_1 = pd.DataFrame(y_data_train_1).T
+    Y_train_2 = pd.DataFrame(y_data_train_2).T
+
+    ds_name_1 = 'lc_dataset_1'
+    ds_name_2 = 'lc_dataset_2'
+    ds_train_1 = DatasetConfig(
+        name=ds_name_1,
+        data=Y_train_1,
+        kriging_config=KrigingConfig(basis_function=2)
+    )
+    ds_train_2 = DatasetConfig(
+        name=ds_name_2,
+        data=Y_train_2,
+        kriging_config=KrigingConfig(basis_function=2)
+    )
+
+    # Validation data (unseen points)
+    X_val = pd.DataFrame({
+        'x1': [1.5, 2.5, 3.5, 4.5],
+        'x2': [1.0, 1.5, 2.0, 1.25]
+    })
+
+    y_data_val_1 = {}
+    y_data_val_2 = {}
+    for i, row in X_val.iterrows():
+        y_data_val_1[i] = y1_func(t_steps, row['x1'], row['x2'])
+        y_data_val_2[i] = y2_func(t_steps, row['x1'], row['x2'])
+    Y_val_1 = pd.DataFrame(y_data_val_1).T
+    Y_val_2 = pd.DataFrame(y_data_val_2).T
+
+    ds_val_1 = DatasetConfig(name=ds_name_1, data=Y_val_1)
+    ds_val_2 = DatasetConfig(name=ds_name_2, data=Y_val_2)
+
+    # Run learning curve
+    q = Quasar(keep_work_dir=True)
+    lc_result = q.learning_curve(
+        x=X_train,
+        datasets=[ds_train_1, ds_train_2],
+        x_val=X_val,
+        val_datasets=[ds_val_1, ds_val_2],
+        n_slices=5  # Will test with 6, 12, 18, 24, 30 samples
+    )
+
+    # Check structure
+    assert ds_name_1 in lc_result.dataset_names
+    assert ds_name_2 in lc_result.dataset_names
+    assert len(lc_result.train_sizes) == 5
+
+    # Check that SRMSE generally improves (decreases) with more data for both datasets
+    summary = lc_result.summary()
+    for ds_name in [ds_name_1, ds_name_2]:
+        srmse_values = summary.loc[ds_name, 'SRMSE'].values
+
+        # The last (largest training set) should have lower SRMSE than the first
+        assert srmse_values[-1] < srmse_values[0], \
+            f'Expected SRMSE to decrease for {ds_name}: first={srmse_values[0]}, last={srmse_values[-1]}'
+
+    # Check HTML export
+    html_path = Path(__file__).parent / 'reports' / 'learning_curve_report.html'
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    lc_result.save_html(str(html_path))
+    assert html_path.exists()
+
+
+def test_learning_curve_store_predictions_false():
+    """
+    Unit test to verify store_predictions=False omits y_pred and y_true.
+    """
+    results_with = {
+        'ds': {
+            10: {
+                'metrics': {'RMSE': 1.0},
+                'y_pred': pd.DataFrame({'a': [1, 2]}),
+                'y_true': pd.DataFrame({'a': [1, 2]}),
+                'x_val': pd.DataFrame()
+            }
+        }
+    }
+
+    results_without = {
+        'ds': {
+            10: {
+                'metrics': {'RMSE': 1.0},
+                'x_val': pd.DataFrame()
+            }
+        }
+    }
+
+    # With predictions
+    lc_with = LearningCurveResult(results_with)
+    assert 'y_pred' in lc_with.results['ds'][10]
+    assert 'y_true' in lc_with.results['ds'][10]
+
+    # Without predictions
+    lc_without = LearningCurveResult(results_without)
+    assert 'y_pred' not in lc_without.results['ds'][10]
+    assert 'y_true' not in lc_without.results['ds'][10]
+
+    # Both should still have working summary()
+    assert 'RMSE' in lc_with.summary().columns
+    assert 'RMSE' in lc_without.summary().columns
