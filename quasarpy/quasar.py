@@ -323,6 +323,7 @@ class Quasar:
         x_val: pd.DataFrame,
         val_datasets: List[DatasetConfig],
         n_slices: int = 10,
+        min_samples: Optional[int] = None,
         store_predictions: bool = True
     ) -> LearningCurveResult:
         """
@@ -346,6 +347,11 @@ class Quasar:
             Number of slices to divide the training data into. Default is 10.
             For example, with 100 samples and n_slices=10, training sizes will
             be [10, 20, 30, ..., 100].
+        min_samples : int, optional
+            Minimum number of samples for the first training slice. Use this
+            when your model requires a minimum amount of data to train successfully.
+            If None, defaults to n_samples // n_slices. Training sizes will be
+            evenly spaced from min_samples to n_samples.
         store_predictions : bool, optional
             If True, stores y_pred and y_true for each training size.
             If False, only stores metrics (lower memory). Default is True.
@@ -364,23 +370,31 @@ class Quasar:
         ...     datasets=[ds_train],
         ...     x_val=X_val,
         ...     val_datasets=[ds_val],
-        ...     n_slices=5
+        ...     n_slices=5,
+        ...     min_samples=15  # Start with at least 15 training samples
         ... )
         >>> print(lc_result.summary())
         >>> lc_result.plot('SRMSE').show()
         >>> lc_result.dashboard()
         """
         n_samples = len(x)
-        slice_size = n_samples // n_slices
 
-        if slice_size == 0:
+        # Determine minimum samples for first slice
+        if min_samples is None:
+            min_samples = n_samples // n_slices
+
+        if min_samples < 1:
+            min_samples = 1
+
+        if min_samples > n_samples:
             raise ValueError(
-                f'n_slices ({n_slices}) is larger than the number of samples ({n_samples}). '
-                f'Reduce n_slices or provide more training data.'
+                f'min_samples ({min_samples}) cannot exceed total samples ({n_samples}).'
             )
 
-        # Compute training sizes: [slice_size, 2*slice_size, ..., n_slices*slice_size]
-        train_sizes = [slice_size * i for i in range(1, n_slices + 1)]
+        # Compute evenly spaced training sizes from min_samples to n_samples
+        train_sizes = np.linspace(min_samples, n_samples, n_slices, dtype=int).tolist()
+        # Remove duplicates while preserving order (can happen with small ranges)
+        train_sizes = list(dict.fromkeys(train_sizes))
 
         # Initialize results structure: {dataset_name: {train_size: {...}}}
         all_results: Dict[str, Dict[int, Dict]] = {ds.name: {} for ds in val_datasets}

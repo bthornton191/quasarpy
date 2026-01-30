@@ -518,29 +518,40 @@ def test_learning_curve_train_sizes_calculation():
     """
     Unit test for verifying train_sizes are computed correctly from n_slices.
     """
-    # With 100 samples and n_slices=10, expect [10, 20, ..., 100]
+    # With 100 samples and n_slices=10, no min_samples -> default behavior
+    # Using np.linspace logic: linspace(10, 100, 10) = [10, 20, ..., 100]
     n_samples = 100
     n_slices = 10
-    slice_size = n_samples // n_slices
-    expected = [slice_size * i for i in range(1, n_slices + 1)]
+    min_samples = n_samples // n_slices  # default
+    expected = np.linspace(min_samples, n_samples, n_slices, dtype=int).tolist()
 
     assert expected == [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 
-    # With 50 samples and n_slices=5, expect [10, 20, 30, 40, 50]
+    # With 50 samples and n_slices=5, no min_samples
     n_samples = 50
     n_slices = 5
-    slice_size = n_samples // n_slices
-    expected = [slice_size * i for i in range(1, n_slices + 1)]
+    min_samples = n_samples // n_slices
+    expected = np.linspace(min_samples, n_samples, n_slices, dtype=int).tolist()
 
     assert expected == [10, 20, 30, 40, 50]
 
-    # With 25 samples and n_slices=4, expect [6, 12, 18, 24]
-    n_samples = 25
-    n_slices = 4
-    slice_size = n_samples // n_slices
-    expected = [slice_size * i for i in range(1, n_slices + 1)]
+    # With min_samples=15, n_samples=30, n_slices=5
+    # linspace(15, 30, 5) = [15, 18, 22, 26, 30] (approximately)
+    n_samples = 30
+    n_slices = 5
+    min_samples = 15
+    expected = np.linspace(min_samples, n_samples, n_slices, dtype=int).tolist()
 
-    assert expected == [6, 12, 18, 24]
+    assert expected == [15, 18, 22, 26, 30]
+
+    # With min_samples=20, n_samples=30, n_slices=3
+    # linspace(20, 30, 3) = [20, 25, 30]
+    n_samples = 30
+    n_slices = 3
+    min_samples = 20
+    expected = np.linspace(min_samples, n_samples, n_slices, dtype=int).tolist()
+
+    assert expected == [20, 25, 30]
 
 
 def test_learning_curve_result_summary():
