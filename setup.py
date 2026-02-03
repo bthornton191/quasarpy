@@ -25,6 +25,10 @@ setup(
         "numpy>=1.0.0",
         "plotly>=5.0.0",
         "ipywidgets>=7.0.0",
+        "pymoo>=0.6.0",
+        "tqdm>=4.0.0",
+        "numba",
+
     ],
     extras_require={
         "dev": [

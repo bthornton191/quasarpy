@@ -6,13 +6,16 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 from .validation import LearningCurveResult, ValidationResult
+from .optimization import (
+    ObjectiveConfig, ConstraintConfig, OptimizationResult, run_optimization
+)
 
 
 @dataclass
@@ -584,3 +587,279 @@ class Quasar:
                 raise RuntimeError(f'Quasar execution failed:\n{stdout}')
             else:
                 (self.work_dir / '_quasar_output.txt').write_text(stdout)
+
+    def optimize(
+        self,
+        objectives: List['ObjectiveConfig'],
+        bounds: Dict[str, Tuple[float, float]],
+        constraints: Optional[List['ConstraintConfig']] = None,
+        algorithm: str = 'auto',
+        pop_size: int = 100,
+        n_gen: int = 100,
+        seed: Optional[int] = None,
+        verbose: bool = True,
+        **algorithm_kwargs
+    ) -> 'OptimizationResult':
+        """
+        Perform multi-objective optimization using the trained surrogate model.
+
+        This method uses pymoo's evolutionary algorithms to find Pareto-optimal
+        solutions that trade off between multiple objectives. The surrogate model
+        must be trained (via ``train()``) before calling this method.
+
+        Parameters
+        ----------
+        objectives : List[ObjectiveConfig]
+            List of objectives to optimize. Each objective specifies:
+
+            - ``name``: Human-readable name for plots/reports
+            - ``dataset_name``: Which trained dataset to use
+            - ``aggregation``: How to convert curves to scalars (see below)
+            - ``direction``: ``'minimize'`` or ``'maximize'``
+
+            **Aggregation options for curve datasets:**
+
+            - ``'scalar'`` or ``None``: Use value directly (for scalar datasets)
+            - ``'max'``: Maximum value of curve (peak stress, max displacement)
+            - ``'min'``: Minimum value (minimum safety factor)
+            - ``'mean'``: Mean value (average power)
+            - ``'integral'``: Area under curve (total energy, impulse)
+            - ``'final'``: Last value (steady-state response)
+            - ``'initial'``: First value
+            - ``'peak'``: Maximum absolute value
+            - ``'range'``: Max - Min (oscillation amplitude)
+            - ``'std'``: Standard deviation (variability)
+            - ``'rms'``: Root mean square (signal power)
+            - Custom callable: ``f(y: np.ndarray) -> np.ndarray`` where
+              input shape is ``(n_samples, n_curve_points)`` and output
+              shape is ``(n_samples,)``
+
+        bounds : Dict[str, Tuple[float, float]]
+            Parameter bounds as ``{param_name: (lower, upper)}``.
+            Keys must match column names from the training data ``X``.
+
+        constraints : List[ConstraintConfig], optional
+            List of constraints to enforce. Each constraint specifies:
+
+            - ``name``: Human-readable name
+            - ``dataset_name``: Which trained dataset to use
+            - ``aggregation``: How to convert curves to scalars
+            - ``constraint_type``: One of:
+
+              - ``'<='`` or ``'le'``: value ≤ threshold (upper bound)
+              - ``'>='`` or ``'ge'``: value ≥ threshold (lower bound)
+              - ``'=='`` or ``'eq'``: |value - threshold| ≤ tolerance
+              - ``'range'``: lower ≤ value ≤ upper
+
+            - ``threshold``: Value for ``<=``, ``>=``, ``==`` types
+            - ``lower``, ``upper``: Bounds for ``'range'`` type
+            - ``tolerance``: For equality constraints (default 1e-6)
+
+        algorithm : str, optional
+            Optimization algorithm. Options:
+
+            - ``'auto'``: Automatically select (NSGA2 for ≤3 objectives,
+              NSGA3 for >3 objectives). **Recommended for most cases.**
+            - ``'NSGA2'``: Non-dominated Sorting Genetic Algorithm II.
+              Best for 2-3 objectives. Uses crowding distance for diversity.
+            - ``'NSGA3'``: Reference-direction based NSGA-III.
+              Best for 3-15 objectives. Uses structured reference points.
+            - ``'MOEAD'``: Multi-Objective EA based on Decomposition.
+              Decomposes into weighted scalar subproblems. Good for
+              many objectives with uniform Pareto fronts.
+            - ``'CTAEA'``: Constrained Two-Archive EA.
+              Excellent for heavily constrained problems.
+            - ``'AGEMOEA'``: Adaptive Geometry Estimation MOEA.
+              Adapts to Pareto front geometry during search.
+            - ``'AGEMOEA2'``: Improved AGE-MOEA with better convergence.
+            - ``'SMSEMOA'``: S-Metric Selection EMOA.
+              Uses hypervolume indicator. Slow but high-quality fronts.
+
+            Default is ``'auto'``.
+
+        pop_size : int, optional
+            Population size (number of solutions per generation).
+            Larger values improve diversity but increase computation.
+            Typical range: 50-200. Default is 100.
+
+        n_gen : int, optional
+            Number of generations to evolve.
+            More generations allow better convergence but take longer.
+            Typical range: 50-500. Default is 100.
+
+        seed : int, optional
+            Random seed for reproducibility.
+
+        verbose : bool, optional
+            Whether to print progress during optimization.
+            Default is True.
+
+        **algorithm_kwargs
+            Additional keyword arguments passed to the pymoo algorithm
+            constructor. See pymoo documentation for algorithm-specific
+            options.
+
+        Returns
+        -------
+        OptimizationResult
+            Object containing:
+
+            - ``pareto_front``: DataFrame of objective values for
+              Pareto-optimal solutions
+            - ``pareto_set``: DataFrame of parameter values for
+              Pareto-optimal solutions
+            - ``summary()``: Summary statistics
+            - ``plot_pareto_2d()``, ``plot_pareto_3d()``: Pareto visualizations
+            - ``plot_parallel_coordinates()``: High-dimensional visualization
+            - ``plot_convergence()``: Convergence history
+            - ``dashboard()``: Interactive Jupyter exploration
+            - ``save_html(filename)``: Export to HTML report
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been trained (``train()`` not called).
+        ValueError
+            If bounds contain unknown parameter names or algorithm is invalid.
+
+        See Also
+        --------
+        ObjectiveConfig : Objective configuration class.
+        ConstraintConfig : Constraint configuration class.
+        OptimizationResult : Result container with visualization methods.
+
+        Notes
+        -----
+        **Algorithm Selection Guide:**
+
+        +------------+------------+------------------------------------------+
+        | Algorithm  | Objectives | Best Use Case                            |
+        +============+============+==========================================+
+        | NSGA2      | 2-3        | General purpose, fast, robust            |
+        +------------+------------+------------------------------------------+
+        | NSGA3      | 3-15       | Many objectives, structured fronts       |
+        +------------+------------+------------------------------------------+
+        | MOEAD      | 3-10+      | Uniform Pareto fronts, decomposable      |
+        +------------+------------+------------------------------------------+
+        | CTAEA      | Any        | Heavy constraints, infeasible regions    |
+        +------------+------------+------------------------------------------+
+        | AGEMOEA    | 2-10       | Unknown front geometry                   |
+        +------------+------------+------------------------------------------+
+        | SMSEMOA    | 2-4        | Quality over speed, hypervolume          |
+        +------------+------------+------------------------------------------+
+
+        **Convergence Tips:**
+
+        - Start with fewer generations (50) to verify setup
+        - Increase ``pop_size`` if Pareto front has gaps
+        - Increase ``n_gen`` if convergence plot shows improvement
+        - Use ``seed`` for reproducible results
+
+        Examples
+        --------
+        Basic two-objective optimization:
+
+        >>> from quasarpy import Quasar, DatasetConfig, KrigingConfig
+        >>> from quasarpy.optimization import ObjectiveConfig
+        >>>
+        >>> # Train surrogate
+        >>> q = Quasar()
+        >>> q.train(X_train, [ds_stress, ds_weight])
+        >>>
+        >>> # Define objectives
+        >>> objectives = [
+        ...     ObjectiveConfig(
+        ...         name='Peak Stress',
+        ...         dataset_name='stress',
+        ...         aggregation='max',
+        ...         direction='minimize'
+        ...     ),
+        ...     ObjectiveConfig(
+        ...         name='Weight',
+        ...         dataset_name='weight',
+        ...         aggregation='scalar',
+        ...         direction='minimize'
+        ...     )
+        ... ]
+        >>>
+        >>> # Define bounds
+        >>> bounds = {
+        ...     'thickness': (0.5, 10.0),
+        ...     'density': (1.0, 5.0)
+        ... }
+        >>>
+        >>> # Run optimization
+        >>> result = q.optimize(objectives, bounds, pop_size=50, n_gen=100)
+        >>> print(result.summary())
+        >>> result.plot_pareto_2d().show()
+
+        With constraints:
+
+        >>> from quasarpy.optimization import ConstraintConfig
+        >>>
+        >>> constraints = [
+        ...     ConstraintConfig(
+        ...         name='Max Stress Limit',
+        ...         dataset_name='stress',
+        ...         aggregation='max',
+        ...         constraint_type='<=',
+        ...         threshold=500.0
+        ...     ),
+        ...     ConstraintConfig(
+        ...         name='Min Thickness',
+        ...         dataset_name='thickness',
+        ...         aggregation='scalar',
+        ...         constraint_type='>=',
+        ...         threshold=2.0
+        ...     )
+        ... ]
+        >>>
+        >>> result = q.optimize(
+        ...     objectives, bounds,
+        ...     constraints=constraints,
+        ...     algorithm='CTAEA'  # Good for constrained problems
+        ... )
+
+        Many-objective optimization (>3 objectives):
+
+        >>> objectives = [
+        ...     ObjectiveConfig('Stress', 'stress', 'max', 'minimize'),
+        ...     ObjectiveConfig('Weight', 'weight', 'scalar', 'minimize'),
+        ...     ObjectiveConfig('Cost', 'cost', 'scalar', 'minimize'),
+        ...     ObjectiveConfig('Stiffness', 'stiffness', 'mean', 'maximize'),
+        ...     ObjectiveConfig('Fatigue Life', 'fatigue', 'min', 'maximize'),
+        ... ]
+        >>>
+        >>> # Auto-selects NSGA3 for >3 objectives
+        >>> result = q.optimize(objectives, bounds, n_gen=200)
+        >>> result.plot_parallel_coordinates().show()
+        >>> result.save_html('optimization_report.html')
+        """
+        # Validate model is trained
+        if not hasattr(self, 'datasets') or self.datasets is None:
+            raise RuntimeError(
+                'Model not trained. Call train() before optimize().'
+            )
+
+        # Validate bounds match training parameters
+        train_params = set(self.x.columns)
+        bound_params = set(bounds.keys())
+        if not bound_params.issubset(train_params):
+            unknown = bound_params - train_params
+            raise ValueError(
+                f'Unknown parameters in bounds: {unknown}. '
+                f'Training parameters: {train_params}'
+            )
+
+        return run_optimization(
+            quasar=self,
+            objectives=objectives,
+            bounds=bounds,
+            constraints=constraints,
+            algorithm=algorithm,
+            pop_size=pop_size,
+            n_gen=n_gen,
+            seed=seed,
+            verbose=verbose,
+            **algorithm_kwargs
+        )
