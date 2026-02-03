@@ -734,3 +734,141 @@ def test_learning_curve_store_predictions_false():
     # Both should still have working summary()
     assert 'RMSE' in lc_with.summary().columns
     assert 'RMSE' in lc_without.summary().columns
+
+
+@pytest.mark.skipif(not QUASAR_INSTALLED, reason='Quasar not installed')
+def test_learning_curve_final_slice_matches_direct_validate():
+    """
+    Regression test: the last slice of learning_curve (using full dataset)
+    should produce identical results to a direct train() + validate() call.
+    """
+    np.random.seed(42)
+    n_train = 20
+
+    X_train = pd.DataFrame({
+        'x1': np.random.uniform(1, 5, n_train),
+        'x2': np.random.uniform(0.5, 2.5, n_train)
+    })
+
+    t_steps = np.linspace(0, 2, 21)
+
+    y_data_train = {}
+    for i, row in X_train.iterrows():
+        y_data_train[i] = y1_func(t_steps, row['x1'], row['x2'])
+    Y_train = pd.DataFrame(y_data_train).T
+
+    ds_name = 'consistency_test'
+    ds_train = DatasetConfig(
+        name=ds_name,
+        data=Y_train,
+        kriging_config=KrigingConfig(basis_function=2)
+    )
+
+    # Validation data
+    X_val = pd.DataFrame({
+        'x1': [1.5, 2.5, 3.5],
+        'x2': [1.0, 1.5, 2.0]
+    })
+
+    y_data_val = {}
+    for i, row in X_val.iterrows():
+        y_data_val[i] = y1_func(t_steps, row['x1'], row['x2'])
+    Y_val = pd.DataFrame(y_data_val).T
+
+    ds_val = DatasetConfig(name=ds_name, data=Y_val)
+
+    # --- Method 1: Direct train + validate ---
+    q1 = Quasar(keep_work_dir=True)
+    q1.train(X_train, [ds_train])
+    direct_result = q1.validate(X_val, [ds_val])
+    direct_srmse = direct_result.summary().loc[ds_name, 'SRMSE']
+
+    # --- Method 2: Learning curve (last slice uses full dataset) ---
+    q2 = Quasar(keep_work_dir=True)
+    lc_result = q2.learning_curve(
+        x=X_train,
+        datasets=[ds_train],
+        x_val=X_val,
+        val_datasets=[ds_val],
+        n_slices=4  # Last slice will use all 20 samples
+    )
+
+    # Get the SRMSE from the last slice (should use all training data)
+    last_size = lc_result.train_sizes[-1]
+    lc_srmse = lc_result.results[ds_name][last_size]['metrics']['SRMSE']
+
+    # They should be identical (or very close due to floating point)
+    assert last_size == n_train, f'Last slice size {last_size} != n_train {n_train}'
+    assert np.isclose(direct_srmse, lc_srmse, rtol=1e-6), \
+        f'Direct SRMSE ({direct_srmse}) != Learning curve SRMSE ({lc_srmse})'
+
+
+@pytest.mark.skipif(not QUASAR_INSTALLED, reason='Quasar not installed')
+def test_learning_curve_with_nonsequential_indices():
+    """
+    Test that learning_curve works correctly when DataFrames have
+    non-sequential indices (e.g., from shuffling or filtering).
+    """
+    np.random.seed(42)
+    n_train = 20
+
+    # Create data with non-sequential indices
+    random_indices = np.random.permutation(range(100, 100 + n_train))
+
+    X_train = pd.DataFrame({
+        'x1': np.random.uniform(1, 5, n_train),
+        'x2': np.random.uniform(0.5, 2.5, n_train)
+    }, index=random_indices)
+
+    t_steps = np.linspace(0, 2, 21)
+
+    y_data_train = {}
+    for i, row in X_train.iterrows():
+        y_data_train[i] = y1_func(t_steps, row['x1'], row['x2'])
+    Y_train = pd.DataFrame(y_data_train).T
+
+    # Verify indices match
+    assert list(X_train.index) == list(Y_train.index), 'X and Y indices should match'
+
+    ds_name = 'nonseq_index_test'
+    ds_train = DatasetConfig(
+        name=ds_name,
+        data=Y_train,
+        kriging_config=KrigingConfig(basis_function=2)
+    )
+
+    # Validation data (also with non-sequential indices)
+    val_indices = [500, 501, 502]
+    X_val = pd.DataFrame({
+        'x1': [1.5, 2.5, 3.5],
+        'x2': [1.0, 1.5, 2.0]
+    }, index=val_indices)
+
+    y_data_val = {}
+    for i, row in X_val.iterrows():
+        y_data_val[i] = y1_func(t_steps, row['x1'], row['x2'])
+    Y_val = pd.DataFrame(y_data_val).T
+
+    ds_val = DatasetConfig(name=ds_name, data=Y_val)
+
+    # Run learning curve
+    q = Quasar(keep_work_dir=True)
+    lc_result = q.learning_curve(
+        x=X_train,
+        datasets=[ds_train],
+        x_val=X_val,
+        val_datasets=[ds_val],
+        n_slices=4
+    )
+
+    # Check that SRMSE values are reasonable (not NaN or huge)
+    summary = lc_result.summary()
+    for train_size in lc_result.train_sizes:
+        srmse = summary.loc[(ds_name, train_size), 'SRMSE']
+        assert not np.isnan(srmse), f'SRMSE is NaN for train_size={train_size}'
+        assert srmse < 1.0, f'SRMSE ({srmse}) unexpectedly large for train_size={train_size}'
+
+    # Verify SRMSE decreases (or stays similar) as training size increases
+    srmse_values = summary.loc[ds_name, 'SRMSE'].values
+    assert srmse_values[-1] <= srmse_values[0] * 1.1, \
+        f'SRMSE did not decrease: first={srmse_values[0]}, last={srmse_values[-1]}'
