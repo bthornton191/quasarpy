@@ -381,6 +381,12 @@ class Quasar:
         >>> lc_result.dashboard()
         """
         n_samples = len(x)
+        for ds in datasets:
+            if len(ds.data) != n_samples:
+                raise ValueError(
+                    f'Dataset "{ds.name}" has {len(ds.data)} rows but X has {n_samples} rows. '
+                    f'X and Y must have the same number of samples.'
+                )
 
         # Determine minimum samples for first slice
         if min_samples is None:
