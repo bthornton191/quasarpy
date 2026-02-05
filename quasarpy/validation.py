@@ -776,3 +776,629 @@ class LearningCurveResult:
 
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(html_content)
+
+
+class ConfigSearchResult:
+    """
+    Container for configuration search results with visualization capabilities.
+
+    Stores validation metrics for each Kriging configuration tested, enabling
+    analysis of which hyperparameter combinations perform best.
+    """
+
+    def __init__(self, results: Dict[str, Dict[int, Dict]], failures: List[Dict] = None):
+        """
+        Parameters
+        ----------
+        results : Dict[str, Dict[int, Dict]]
+            Dictionary containing config search data for each dataset.
+            Structure:
+            {
+                'dataset_name': {
+                    config_id: {
+                        'metrics': {'RMSE': float, 'MAE': float, ...},
+                        'config': KrigingConfig,
+                        'y_pred': pd.DataFrame (optional),
+                        'y_true': pd.DataFrame (optional),
+                        'x_val': pd.DataFrame
+                    },
+                    ...
+                }
+            }
+        failures : List[Dict], optional
+            List of failed configurations. Each entry is a dict with:
+            {
+                'config': KrigingConfig,
+                'error': str (error message)
+            }
+        """
+        self.results = results
+        self.failures = failures or []
+
+    @property
+    def n_successful(self) -> int:
+        """Returns the number of successful configurations."""
+        if not self.results:
+            return 0
+        first_ds = next(iter(self.results.values()))
+        return len(first_ds)
+
+    @property
+    def n_failed(self) -> int:
+        """Returns the number of failed configurations."""
+        return len(self.failures)
+
+    @property
+    def dataset_names(self) -> List[str]:
+        """Returns list of dataset names."""
+        return list(self.results.keys())
+
+    @property
+    def metric_names(self) -> List[str]:
+        """Returns list of metric names."""
+        if not self.results:
+            return []
+        first_ds = next(iter(self.results.values()))
+        if not first_ds:
+            return []
+        first_config = next(iter(first_ds.values()))
+        return list(first_config['metrics'].keys())
+
+    @property
+    def configs(self) -> List:
+        """Returns list of all successfully tested KrigingConfig objects."""
+        if not self.results:
+            return []
+        first_ds = next(iter(self.results.values()))
+        return [res['config'] for res in first_ds.values()]
+
+    def failures_summary(self) -> pd.DataFrame:
+        """
+        Returns a summary DataFrame of failed configurations.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns for config parameters and error message.
+            Empty DataFrame if no failures.
+        """
+        if not self.failures:
+            return pd.DataFrame(columns=[
+                'basis_function', 'stationarity', 'pulsation', 'nugget_effect', 'error'
+            ])
+
+        data = []
+        for failure in self.failures:
+            config = failure['config']
+            data.append({
+                'basis_function': config.basis_function,
+                'stationarity': config.stationarity,
+                'pulsation': config.pulsation,
+                'nugget_effect': config.nugget_effect,
+                'error': failure['error']
+            })
+        return pd.DataFrame(data)
+
+    def summary(self, include_failures: bool = False) -> pd.DataFrame:
+        """
+        Returns a summary DataFrame of metrics for all datasets and configurations.
+
+        Parameters
+        ----------
+        include_failures : bool, optional
+            If True, includes failed configurations with NaN metrics and an
+            'error' column containing the failure message. Default is False.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns for config parameters and all metrics.
+            Index is 'Dataset'. If include_failures=True, adds 'error' column.
+        """
+        data = []
+        for ds_name, configs_dict in self.results.items():
+            for config_id, res in configs_dict.items():
+                config = res['config']
+                row = {
+                    'Dataset': ds_name,
+                    'basis_function': config.basis_function,
+                    'stationarity': config.stationarity,
+                    'pulsation': config.pulsation,
+                    'nugget_effect': config.nugget_effect
+                }
+                row.update(res['metrics'])
+                if include_failures:
+                    row['error'] = None
+                data.append(row)
+
+        if include_failures:
+            for failure in self.failures:
+                config = failure['config']
+                row = {
+                    'Dataset': None,
+                    'basis_function': config.basis_function,
+                    'stationarity': config.stationarity,
+                    'pulsation': config.pulsation,
+                    'nugget_effect': config.nugget_effect,
+                    'error': failure['error']
+                }
+                # Add NaN for all metrics
+                for metric in self.metric_names:
+                    row[metric] = np.nan
+                data.append(row)
+
+        return pd.DataFrame(data).set_index('Dataset')
+
+    def best(self, weights: Dict[str, float] = None) -> Dict:
+        """
+        Returns the best configuration for each dataset based on weighted metrics.
+
+        Parameters
+        ----------
+        weights : Dict[str, float], optional
+            Weights for each metric. Higher weight = more importance.
+            Default is {'SRMSE': 1.0} (optimize for SRMSE only).
+            Example: {'SRMSE': 1.0, 'MAE': 0.5} weights SRMSE twice as much as MAE.
+
+        Returns
+        -------
+        Dict[str, KrigingConfig]
+            Dictionary mapping dataset name to the optimal KrigingConfig.
+
+        Notes
+        -----
+        All metrics are treated as "lower is better". The weighted score is
+        computed as: score = sum(metric_value * weight) / sum(weights)
+        """
+        if weights is None:
+            weights = {'SRMSE': 1.0}
+
+        best_configs = {}
+        for ds_name, configs_dict in self.results.items():
+            best_score = float('inf')
+            best_config = None
+
+            for config_id, res in configs_dict.items():
+                metrics = res['metrics']
+                # Compute weighted score (lower is better)
+                total_weight = sum(weights.get(m, 0) for m in metrics)
+                if total_weight == 0:
+                    continue
+
+                weighted_sum = sum(
+                    metrics[m] * weights.get(m, 0)
+                    for m in metrics
+                )
+                score = weighted_sum / total_weight
+
+                if score < best_score:
+                    best_score = score
+                    best_config = res['config']
+
+            best_configs[ds_name] = best_config
+
+        return best_configs
+
+    def plot(self, metric: str = 'SRMSE', max_configs: int = 20) -> go.Figure:
+        """
+        Creates a bar chart comparing configurations for a specified metric.
+
+        Parameters
+        ----------
+        metric : str, optional
+            The metric to plot. Default is 'SRMSE'.
+        max_configs : int, optional
+            Maximum number of configurations to display (sorted by metric).
+            Default is 20.
+
+        Returns
+        -------
+        go.Figure
+            Plotly figure with configurations on X-axis and metric on Y-axis.
+        """
+        fig = go.Figure()
+
+        colors = sample_colorscale(
+            'Turbo',
+            [i / max(1, len(self.dataset_names) - 1) for i in range(len(self.dataset_names))]
+        )
+
+        for i, ds_name in enumerate(self.dataset_names):
+            configs_dict = self.results[ds_name]
+
+            # Sort by metric and limit
+            sorted_configs = sorted(
+                configs_dict.items(),
+                key=lambda x: x[1]['metrics'][metric]
+            )[:max_configs]
+
+            labels = []
+            values = []
+            for config_id, res in sorted_configs:
+                cfg = res['config']
+                label = f'bf={cfg.basis_function}, st={cfg.stationarity}, nug={cfg.nugget_effect:.1f}'
+                labels.append(label)
+                values.append(res['metrics'][metric])
+
+            fig.add_trace(go.Bar(
+                x=labels,
+                y=values,
+                name=ds_name,
+                marker_color=colors[i] if len(self.dataset_names) > 1 else 'steelblue'
+            ))
+
+        fig.update_layout(
+            title=f'Configuration Comparison: {metric}',
+            xaxis_title='Configuration',
+            yaxis_title=metric,
+            yaxis=dict(exponentformat='e', type='log'),
+            barmode='group',
+            xaxis_tickangle=-45,
+            width=900,
+            height=500
+        )
+
+        return fig
+
+    def dashboard(self):
+        """
+        Displays an interactive Jupyter dashboard with weight sliders.
+
+        Features:
+        - Dataset selection dropdown.
+        - Weight sliders for each metric (0-1 range).
+        - Bar chart of configurations ranked by weighted score.
+        - Best configuration highlighted.
+        - Reset Weights button.
+        """
+        if not self.dataset_names:
+            print('No config search results to display.')
+            return
+
+        # Widgets
+        ds_dropdown: widgets.Dropdown = widgets.Dropdown(
+            options=self.dataset_names,
+            value=self.dataset_names[0],
+            description='Dataset:'
+        )
+
+        # Weight sliders for each metric
+        weight_sliders = {}
+        for metric in self.metric_names:
+            default_val = 1.0 if metric == 'SRMSE' else 0.0
+            weight_sliders[metric] = widgets.FloatSlider(
+                value=default_val,
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                description=f'{metric}:',
+                continuous_update=False,
+                style={'description_width': '80px'},
+                layout=widgets.Layout(width='280px'),
+                readout_format='.2f'
+            )
+
+        # Reset button
+        reset_btn = widgets.Button(
+            description='Reset Weights',
+            button_style='warning',
+            layout=widgets.Layout(width='120px')
+        )
+
+        # Figure
+        fig: go.FigureWidget = go.FigureWidget()
+        fig.update_layout(
+            title='Configuration Comparison (Weighted Score)',
+            xaxis_title='Configuration',
+            yaxis_title='Weighted Score',
+            yaxis=dict(exponentformat='e', type='log'),
+            xaxis_tickangle=-45,
+            width=700,
+            height=500
+        )
+
+        def get_weights():
+            return {m: weight_sliders[m].value for m in self.metric_names}
+
+        def update_plot(*args):
+            ds_name = ds_dropdown.value
+            weights = get_weights()
+            configs_dict = self.results[ds_name]
+
+            # Calculate weighted scores
+            scores = []
+            for config_id, res in configs_dict.items():
+                metrics = res['metrics']
+                total_weight = sum(weights.get(m, 0) for m in metrics)
+                if total_weight == 0:
+                    score = 0
+                else:
+                    weighted_sum = sum(metrics[m] * weights.get(m, 0) for m in metrics)
+                    score = weighted_sum / total_weight
+
+                cfg = res['config']
+                label = f'bf={cfg.basis_function}, st={cfg.stationarity}, nug={cfg.nugget_effect:.1f}'
+                scores.append((label, score, config_id))
+
+            # Sort by score (lower is better)
+            scores.sort(key=lambda x: x[1])
+
+            # Limit to top 20
+            scores = scores[:20]
+
+            labels = [s[0] for s in scores]
+            values = [s[1] for s in scores]
+
+            # Highlight best (first after sort)
+            colors = ['gold' if i == 0 else 'steelblue' for i in range(len(scores))]
+
+            with fig.batch_update():
+                fig.data = []
+                fig.add_trace(go.Bar(
+                    x=labels,
+                    y=values,
+                    marker_color=colors,
+                    showlegend=False
+                ))
+
+                # Update title with best config info
+                if scores:
+                    best_label = scores[0][0]
+                    best_score = scores[0][1]
+                    fig.update_layout(
+                        title=f'Best: {best_label} (score: {best_score:.4e})'
+                    )
+
+        def reset_weights(btn):
+            for metric, slider in weight_sliders.items():
+                slider.value = 1.0 if metric == 'SRMSE' else 0.0
+
+        # Connect callbacks
+        ds_dropdown.observe(update_plot, names='value')
+        for slider in weight_sliders.values():
+            slider.observe(update_plot, names='value')
+        reset_btn.on_click(reset_weights)
+
+        # Initialize
+        update_plot()
+
+        # Layout
+        slider_box = widgets.VBox(
+            [widgets.Label('Metric Weights:')] +
+            list(weight_sliders.values()) +
+            [reset_btn]
+        )
+        controls = widgets.VBox([ds_dropdown, slider_box])
+
+        ui = widgets.HBox([controls, fig], layout=widgets.Layout(justify_content='center'))
+        display(ui)
+
+    def save_html(self, filename: str):
+        """
+        Exports the configuration search results to an HTML file with interactive sliders.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output HTML file.
+        """
+        import json
+        import plotly.io as pio
+
+        if not self.dataset_names:
+            return
+
+        # Prepare data for JavaScript
+        js_data = {}
+        for ds_name, configs_dict in self.results.items():
+            js_data[ds_name] = []
+            for config_id, res in configs_dict.items():
+                cfg = res['config']
+                js_data[ds_name].append({
+                    'label': f'bf={cfg.basis_function}, st={cfg.stationarity}, nug={cfg.nugget_effect:.1f}',
+                    'metrics': res['metrics']
+                })
+
+        data_json = json.dumps(js_data)
+        metric_names_json = json.dumps(self.metric_names)
+        dataset_names_json = json.dumps(self.dataset_names)
+
+        # Initial figure (will be updated by JS)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=[], y=[], marker_color=[]))
+        fig.update_layout(
+            title='Configuration Comparison (Weighted Score)',
+            xaxis_title='Configuration',
+            yaxis_title='Weighted Score',
+            yaxis=dict(exponentformat='e'),
+            xaxis_tickangle=-45,
+            margin=dict(l=20, r=20, t=60, b=120)
+        )
+
+        div_plot = pio.to_html(fig, full_html=False, include_plotlyjs='cdn', div_id='config_plot')
+
+        # Dataset dropdown options
+        ds_options_html = '\n'.join(
+            f'<option value="{ds}">{ds}</option>'
+            for ds in self.dataset_names
+        )
+
+        # Slider HTML for each metric
+        slider_html = '\n'.join(
+            f'''<div class="slider-row">
+                <label for="{metric.lower().replace(' ', '_')}-weight">{metric}:</label>
+                <input type="range" id="{metric.lower().replace(' ', '_')}-weight"
+                       min="0" max="1" step="0.05" value="{'1.0' if metric == 'SRMSE' else '0.0'}"
+                       oninput="updateWeights()">
+                <span id="{metric.lower().replace(' ', '_')}-value">{'1.00' if metric == 'SRMSE' else '0.00'}</span>
+            </div>'''
+            for metric in self.metric_names
+        )
+
+        # JavaScript for weight reading
+        weight_readers_js = ',\n'.join(
+            f"'{metric}': parseFloat(document.getElementById('{metric.lower().replace(' ', '_')}-weight').value)"
+            for metric in self.metric_names
+        )
+
+        value_updaters_js = '\n'.join(
+            f"document.getElementById('{metric.lower().replace(' ', '_')}-value').innerText = "
+            f"document.getElementById('{metric.lower().replace(' ', '_')}-weight').value;"
+            for metric in self.metric_names
+        )
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Configuration Search Report</title>
+            <style>
+                body {{ font-family: sans-serif; margin: 0; padding: 20px; }}
+                .container {{
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 20px;
+                    justify-content: center;
+                }}
+                .controls {{
+                    flex: 0 0 300px;
+                    padding: 15px;
+                    border: 1px solid #ddd;
+                    border-radius: 5px;
+                    background: #f9f9f9;
+                }}
+                .controls h3 {{ margin-top: 0; }}
+                .controls select {{
+                    width: 100%;
+                    padding: 8px;
+                    margin-bottom: 15px;
+                    font-size: 14px;
+                }}
+                .slider-row {{
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    margin: 8px 0;
+                }}
+                .slider-row label {{
+                    min-width: 80px;
+                    font-weight: bold;
+                }}
+                .slider-row input[type="range"] {{
+                    flex: 1;
+                }}
+                .slider-row span {{
+                    min-width: 40px;
+                    text-align: right;
+                }}
+                .reset-btn {{
+                    width: 100%;
+                    padding: 10px;
+                    margin-top: 15px;
+                    background: #f0ad4e;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 14px;
+                }}
+                .reset-btn:hover {{ background: #ec971f; }}
+                .plot-div {{
+                    flex: 1 1 600px;
+                    min-width: 400px;
+                    max-width: 900px;
+                    height: 500px;
+                }}
+            </style>
+        </head>
+        <body>
+            <h1>Configuration Search Report</h1>
+            <div class="container">
+                <div class="controls">
+                    <h3>Settings</h3>
+                    <label for="dataset-select">Dataset:</label>
+                    <select id="dataset-select" onchange="updateWeights()">
+                        {ds_options_html}
+                    </select>
+                    <h4>Metric Weights</h4>
+                    {slider_html}
+                    <button class="reset-btn" onclick="resetWeights()">Reset Weights</button>
+                </div>
+                <div class="plot-div">{div_plot}</div>
+            </div>
+            <script>
+                var data = {data_json};
+                var metricNames = {metric_names_json};
+                var datasetNames = {dataset_names_json};
+
+                function getWeights() {{
+                    return {{
+                        {weight_readers_js}
+                    }};
+                }}
+
+                function updateWeights() {{
+                    // Update displayed values
+                    {value_updaters_js}
+
+                    var dsName = document.getElementById('dataset-select').value;
+                    var weights = getWeights();
+                    var configs = data[dsName];
+
+                    // Calculate weighted scores
+                    var scored = configs.map(function(c) {{
+                        var totalWeight = 0;
+                        var weightedSum = 0;
+                        for (var m in c.metrics) {{
+                            var w = weights[m] || 0;
+                            totalWeight += w;
+                            weightedSum += c.metrics[m] * w;
+                        }}
+                        var score = totalWeight > 0 ? weightedSum / totalWeight : 0;
+                        return {{label: c.label, score: score}};
+                    }});
+
+                    // Sort by score (lower is better)
+                    scored.sort(function(a, b) {{ return a.score - b.score; }});
+
+                    // Limit to top 20
+                    scored = scored.slice(0, 20);
+
+                    var labels = scored.map(function(s) {{ return s.label; }});
+                    var values = scored.map(function(s) {{ return s.score; }});
+                    var colors = scored.map(function(s, i) {{
+                        return i === 0 ? 'gold' : 'steelblue';
+                    }});
+
+                    var title = scored.length > 0
+                        ? 'Best: ' + scored[0].label + ' (score: ' + scored[0].score.toExponential(4) + ')'
+                        : 'Configuration Comparison';
+
+                    Plotly.restyle('config_plot', {{
+                        x: [labels],
+                        y: [values],
+                        'marker.color': [colors]
+                    }});
+
+                    Plotly.relayout('config_plot', {{title: title}});
+                }}
+
+                function resetWeights() {{
+                    metricNames.forEach(function(m) {{
+                        var id = m.toLowerCase().replace(' ', '_') + '-weight';
+                        var el = document.getElementById(id);
+                        el.value = m === 'SRMSE' ? '1.0' : '0.0';
+                    }});
+                    updateWeights();
+                }}
+
+                // Initialize
+                updateWeights();
+            </script>
+        </body>
+        </html>
+        """
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(html_content)

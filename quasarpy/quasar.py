@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from .validation import LearningCurveResult, ValidationResult
+from .validation import ConfigSearchResult, LearningCurveResult, ValidationResult
 from .optimization import (
     ObjectiveConfig, ConstraintConfig, OptimizationResult, run_optimization
 )
@@ -439,6 +439,180 @@ class Quasar:
                     }
 
         return LearningCurveResult(all_results)
+
+    def config_search(
+        self,
+        x: pd.DataFrame,
+        datasets: List[DatasetConfig],
+        x_val: pd.DataFrame,
+        val_datasets: List[DatasetConfig],
+        basis_functions: Optional[List[int]] = None,
+        stationarities: Optional[List[int]] = None,
+        pulsations: Optional[List[float]] = None,
+        nugget_effects: Optional[List[float]] = None,
+        store_predictions: bool = False
+    ) -> ConfigSearchResult:
+        """
+        Performs a grid search over Kriging configurations to find optimal settings.
+
+        This method iterates through all combinations of the provided hyperparameter
+        values, trains a model for each configuration, and validates against the
+        provided validation data. Results are stored per-dataset, allowing independent
+        optimization of each output.
+
+        Parameters
+        ----------
+        x : pd.DataFrame
+            Training input parameters (DOE).
+        datasets : List[DatasetConfig]
+            List of DatasetConfig objects containing training data.
+            Note: The kriging_config in these objects is ignored; configurations
+            are generated from the parameter lists below.
+        x_val : pd.DataFrame
+            Validation input parameters.
+        val_datasets : List[DatasetConfig]
+            List of DatasetConfig objects containing validation data (Y values).
+        basis_functions : List[int], optional
+            Basis function types to try.
+            0=none, 1=constant, 2=linear, 3=quadratic, 4=cubic, 5=trigonometric.
+            Default is [1, 2, 3, 4, 5].
+        stationarities : List[int], optional
+            Stationarity types to try.
+            0=h1, 1=h2, 2=h3, 3=exp, 4=matern32.
+            Default is [0, 1, 2, 3, 4].
+        pulsations : List[float], optional
+            Pulsation values to try (used with trigonometric basis).
+            Default is [1.5708].
+        nugget_effects : List[float], optional
+            Nugget effect values to try (noise handling).
+            Default is [0.4, 0.8, 1.2, 1.6, 2.0].
+        store_predictions : bool, optional
+            If True, stores y_pred and y_true for each configuration.
+            If False, only stores metrics (lower memory). Default is False.
+
+        Returns
+        -------
+        ConfigSearchResult
+            Object containing metrics for each configuration with methods:
+            - summary(): DataFrame of all configs and metrics
+            - best(weights): Returns optimal KrigingConfig per dataset
+            - plot(metric): Bar chart comparing configurations
+            - dashboard(): Interactive Jupyter exploration with weight sliders
+            - save_html(filename): Export to HTML report
+
+        Examples
+        --------
+        >>> q = Quasar()
+        >>> result = q.config_search(
+        ...     x=X_train,
+        ...     datasets=[ds_train],
+        ...     x_val=X_val,
+        ...     val_datasets=[ds_val],
+        ...     basis_functions=[2, 3, 4],  # linear, quadratic, cubic
+        ...     nugget_effects=[0.4, 0.8]   # two nugget values
+        ... )
+        >>> print(result.summary())
+        >>> best_configs = result.best(weights={'SRMSE': 1.0, 'MAE': 0.5})
+        >>> result.dashboard()
+        """
+        import itertools
+
+        # Set defaults
+        if basis_functions is None:
+            basis_functions = [1, 2, 3, 4, 5]
+        if stationarities is None:
+            stationarities = [0, 1, 2, 3, 4]
+        if pulsations is None:
+            pulsations = [1.5708]
+        if nugget_effects is None:
+            nugget_effects = [0.4, 0.8, 1.2, 1.6, 2.0]
+
+        # Generate all combinations
+        configs = list(itertools.product(
+            basis_functions, stationarities, pulsations, nugget_effects
+        ))
+
+        # Initialize results structure: {dataset_name: {config_id: {...}}}
+        all_results: Dict[str, Dict[int, Dict]] = {ds.name: {} for ds in val_datasets}
+
+        # Track failed configurations
+        failures: List[Dict] = []
+
+        # Track best SRMSE per dataset for progress display
+        best_srmse: Dict[str, float] = {ds.name: float('inf') for ds in val_datasets}
+
+        # Progress bar with postfix
+        pbar = tqdm(configs, desc='Config Search', unit='config')
+
+        for config_id, (bf, st, puls, nug) in enumerate(pbar):
+            # Create KrigingConfig for this combination
+            krig_config = KrigingConfig(
+                basis_function=bf,
+                stationarity=st,
+                pulsation=puls,
+                nugget_effect=nug
+            )
+
+            # Update postfix with current config
+            pbar.set_postfix_str(
+                f'bf={bf}, st={st}, nug={nug:.1f} | '
+                f'best SRMSE: {min(best_srmse.values()):.4e}'
+            )
+
+            # Create datasets with this config
+            datasets_with_config = [
+                DatasetConfig(
+                    name=ds.name,
+                    data=ds.data,
+                    solver_id=ds.solver_id,
+                    kriging_config=krig_config
+                )
+                for ds in datasets
+            ]
+
+            # Train and validate - some configs may fail numerically
+            try:
+                # Train
+                self.train(x, datasets_with_config)
+
+                # Validate
+                val_result = self.validate(x_val, val_datasets)
+
+                # Store results for each dataset
+                for ds_name, res in val_result.results.items():
+                    # Update best SRMSE tracking
+                    current_srmse = res['metrics']['SRMSE']
+                    if current_srmse < best_srmse[ds_name]:
+                        best_srmse[ds_name] = current_srmse
+
+                    if store_predictions:
+                        all_results[ds_name][config_id] = {
+                            'metrics': res['metrics'],
+                            'config': krig_config,
+                            'y_pred': res['y_pred'],
+                            'y_true': res['y_true'],
+                            'x_val': res['x_val']
+                        }
+                    else:
+                        all_results[ds_name][config_id] = {
+                            'metrics': res['metrics'],
+                            'config': krig_config,
+                            'x_val': res['x_val']
+                        }
+
+            except RuntimeError as e:
+                # Some config combinations cause numerical issues (e.g., LU decomposition failure)
+                # Record the failure and continue with others
+                failures.append({
+                    'config': krig_config,
+                    'error': str(e).split('\n')[0]  # First line of error message
+                })
+                pbar.set_postfix_str(
+                    f'bf={bf}, st={st}, nug={nug:.1f} | FAILED (numerical issue)'
+                )
+                continue
+
+        return ConfigSearchResult(all_results, failures=failures)
 
     def _write_x_file(self, df: pd.DataFrame, filename: str):
         """

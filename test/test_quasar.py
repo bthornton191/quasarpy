@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from quasarpy.quasar import DatasetConfig, KrigingConfig, Quasar
-from quasarpy.validation import LearningCurveResult
+from quasarpy.validation import ConfigSearchResult, LearningCurveResult
 
 PLOT_DIR = Path(__file__).parent / 'plots'
 
@@ -872,3 +872,330 @@ def test_learning_curve_with_nonsequential_indices():
     srmse_values = summary.loc[ds_name, 'SRMSE'].values
     assert srmse_values[-1] <= srmse_values[0] * 1.1, \
         f'SRMSE did not decrease: first={srmse_values[0]}, last={srmse_values[-1]}'
+
+
+# =============================================================================
+# Config Search Tests
+# =============================================================================
+
+
+def test_config_search_grid_size():
+    """
+    Unit test verifying that config_search generates the correct number of configs.
+    """
+    import itertools
+
+    # Test default values
+    basis_functions = [1, 2, 3, 4, 5]
+    stationarities = [0, 1, 2, 3, 4]
+    pulsations = [1.5708]
+    nugget_effects = [0.4, 0.8, 1.2, 1.6, 2.0]
+
+    expected_count = len(basis_functions) * len(stationarities) * len(pulsations) * len(nugget_effects)
+    assert expected_count == 125
+
+    configs = list(itertools.product(basis_functions, stationarities, pulsations, nugget_effects))
+    assert len(configs) == 125
+
+    # Test custom values
+    bf = [2, 3]
+    st = [3, 4]
+    puls = [1.5]
+    nug = [0.5, 1.0]
+
+    expected_count = len(bf) * len(st) * len(puls) * len(nug)
+    assert expected_count == 8
+
+
+def test_config_search_result_summary():
+    """
+    Unit test for ConfigSearchResult.summary() method.
+    """
+    from quasarpy.quasar import KrigingConfig
+
+    # Create mock results structure
+    config1 = KrigingConfig(basis_function=2, stationarity=4, pulsation=1.5708, nugget_effect=0.4)
+    config2 = KrigingConfig(basis_function=3, stationarity=4, pulsation=1.5708, nugget_effect=0.8)
+
+    results = {
+        'dataset_1': {
+            0: {
+                'metrics': {'RMSE': 1.0, 'MAE': 0.8, 'Peak Error': 0.5, 'SRMSE': 0.1},
+                'config': config1,
+                'x_val': pd.DataFrame()
+            },
+            1: {
+                'metrics': {'RMSE': 0.9, 'MAE': 0.7, 'Peak Error': 0.4, 'SRMSE': 0.08},
+                'config': config2,
+                'x_val': pd.DataFrame()
+            },
+        },
+        'dataset_2': {
+            0: {
+                'metrics': {'RMSE': 2.0, 'MAE': 1.5, 'Peak Error': 1.0, 'SRMSE': 0.2},
+                'config': config1,
+                'x_val': pd.DataFrame()
+            },
+            1: {
+                'metrics': {'RMSE': 1.8, 'MAE': 1.3, 'Peak Error': 0.9, 'SRMSE': 0.15},
+                'config': config2,
+                'x_val': pd.DataFrame()
+            },
+        }
+    }
+
+    cs_result = ConfigSearchResult(results)
+
+    # Test summary
+    summary = cs_result.summary()
+    assert summary.index.name == 'Dataset'
+    assert 'basis_function' in summary.columns
+    assert 'stationarity' in summary.columns
+    assert 'pulsation' in summary.columns
+    assert 'nugget_effect' in summary.columns
+    assert 'RMSE' in summary.columns
+    assert 'SRMSE' in summary.columns
+
+    # Check specific values
+    ds1_rows = summary.loc['dataset_1']
+    assert len(ds1_rows) == 2
+    assert ds1_rows.iloc[0]['basis_function'] == 2
+    assert ds1_rows.iloc[1]['basis_function'] == 3
+
+    # Test properties
+    assert cs_result.dataset_names == ['dataset_1', 'dataset_2']
+    assert 'RMSE' in cs_result.metric_names
+    assert 'SRMSE' in cs_result.metric_names
+    assert len(cs_result.configs) == 2
+
+
+def test_config_search_result_best():
+    """
+    Unit test for ConfigSearchResult.best() method with different weight combinations.
+    """
+    from quasarpy.quasar import KrigingConfig
+
+    config1 = KrigingConfig(basis_function=2, stationarity=4, pulsation=1.5708, nugget_effect=0.4)
+    config2 = KrigingConfig(basis_function=3, stationarity=4, pulsation=1.5708, nugget_effect=0.8)
+    config3 = KrigingConfig(basis_function=4, stationarity=3, pulsation=1.5708, nugget_effect=1.2)
+
+    # config1: SRMSE=0.1, MAE=0.9
+    # config2: SRMSE=0.2, MAE=0.3  (best MAE)
+    # config3: SRMSE=0.05, MAE=0.8 (best SRMSE)
+    results = {
+        'dataset_1': {
+            0: {
+                'metrics': {'RMSE': 1.0, 'MAE': 0.9, 'Peak Error': 0.5, 'SRMSE': 0.1},
+                'config': config1,
+                'x_val': pd.DataFrame()
+            },
+            1: {
+                'metrics': {'RMSE': 0.9, 'MAE': 0.3, 'Peak Error': 0.4, 'SRMSE': 0.2},
+                'config': config2,
+                'x_val': pd.DataFrame()
+            },
+            2: {
+                'metrics': {'RMSE': 1.1, 'MAE': 0.8, 'Peak Error': 0.6, 'SRMSE': 0.05},
+                'config': config3,
+                'x_val': pd.DataFrame()
+            },
+        }
+    }
+
+    cs_result = ConfigSearchResult(results)
+
+    # Test default (SRMSE only) - config3 has lowest SRMSE (0.05)
+    best = cs_result.best()
+    assert best['dataset_1'].basis_function == 4
+    assert best['dataset_1'].nugget_effect == 1.2
+
+    # Test SRMSE only explicitly
+    best = cs_result.best(weights={'SRMSE': 1.0})
+    assert best['dataset_1'].basis_function == 4
+
+    # Test MAE only - config2 has lowest MAE (0.3)
+    best = cs_result.best(weights={'MAE': 1.0})
+    assert best['dataset_1'].basis_function == 3
+    assert best['dataset_1'].nugget_effect == 0.8
+
+    # Test weighted combination (SRMSE=1.0, MAE=1.0)
+    # config1: (0.1 + 0.9) / 2 = 0.5
+    # config2: (0.2 + 0.3) / 2 = 0.25  <- best
+    # config3: (0.05 + 0.8) / 2 = 0.425
+    best = cs_result.best(weights={'SRMSE': 1.0, 'MAE': 1.0})
+    assert best['dataset_1'].basis_function == 3
+
+
+def test_config_search_result_plot():
+    """
+    Unit test for ConfigSearchResult.plot() method.
+    """
+    from quasarpy.quasar import KrigingConfig
+
+    config1 = KrigingConfig(basis_function=2, stationarity=4, pulsation=1.5708, nugget_effect=0.4)
+    config2 = KrigingConfig(basis_function=3, stationarity=4, pulsation=1.5708, nugget_effect=0.8)
+
+    results = {
+        'dataset_1': {
+            0: {
+                'metrics': {'RMSE': 1.0, 'MAE': 0.8, 'Peak Error': 0.5, 'SRMSE': 0.1},
+                'config': config1,
+                'x_val': pd.DataFrame()
+            },
+            1: {
+                'metrics': {'RMSE': 0.9, 'MAE': 0.7, 'Peak Error': 0.4, 'SRMSE': 0.08},
+                'config': config2,
+                'x_val': pd.DataFrame()
+            },
+        }
+    }
+
+    cs_result = ConfigSearchResult(results)
+    fig = cs_result.plot('SRMSE')
+
+    # Check that figure was created with correct data
+    assert len(fig.data) == 1  # One trace for dataset_1
+    # Configs should be sorted by SRMSE (0.08, then 0.1)
+    assert fig.data[0].y[0] == 0.08
+    assert fig.data[0].y[1] == 0.1
+    assert fig.layout.title.text == 'Configuration Comparison: SRMSE'
+
+
+def test_config_search_result_save_html(tmp_path):
+    """
+    Unit test for ConfigSearchResult.save_html() method.
+    """
+    from quasarpy.quasar import KrigingConfig
+
+    config1 = KrigingConfig(basis_function=2, stationarity=4, pulsation=1.5708, nugget_effect=0.4)
+    config2 = KrigingConfig(basis_function=3, stationarity=4, pulsation=1.5708, nugget_effect=0.8)
+
+    results = {
+        'dataset_1': {
+            0: {
+                'metrics': {'RMSE': 1.0, 'MAE': 0.8, 'Peak Error': 0.5, 'SRMSE': 0.1},
+                'config': config1,
+                'x_val': pd.DataFrame()
+            },
+            1: {
+                'metrics': {'RMSE': 0.9, 'MAE': 0.7, 'Peak Error': 0.4, 'SRMSE': 0.08},
+                'config': config2,
+                'x_val': pd.DataFrame()
+            },
+        }
+    }
+
+    cs_result = ConfigSearchResult(results)
+
+    # Save to HTML
+    html_path = tmp_path / 'config_search_report.html'
+    cs_result.save_html(str(html_path))
+
+    assert html_path.exists()
+
+    # Check content
+    with open(html_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    assert 'Configuration Search Report' in content
+    assert 'dataset_1' in content
+    assert 'SRMSE' in content
+    assert 'input type="range"' in content  # Weight sliders
+    assert 'updateWeights' in content  # JavaScript function
+
+
+@pytest.mark.skipif(not QUASAR_INSTALLED, reason='Quasar not installed')
+def test_config_search_integration():
+    """
+    Integration test for config_search feature.
+    Verifies that different configurations produce different SRMSE values
+    and that the best() method correctly identifies the optimal config.
+    """
+    # Generate training dataset
+    np.random.seed(42)
+
+    X_train = pd.DataFrame({
+        'x1': np.linspace(1, 5, 10),
+        'x2': np.random.uniform(0.5, 2.5, 10)
+    })
+
+    t_steps = np.linspace(0, 2, 21)
+
+    y_data = {}
+    for label, row in X_train.iterrows():
+        curve = y1_func(t_steps, row['x1'], row['x2'])
+        y_data[label] = curve
+
+    Y_train = pd.DataFrame(y_data).T
+
+    ds_train = DatasetConfig(
+        name='config_search_test',
+        data=Y_train,
+        kriging_config=KrigingConfig()  # Will be overwritten by config_search
+    )
+
+    # Generate validation data
+    X_val = pd.DataFrame({
+        'x1': [1.5, 2.5, 3.5, 4.5],
+        'x2': [1.0, 1.5, 2.0, 1.0]
+    })
+
+    y_data_val = {}
+    for label, row in X_val.iterrows():
+        curve = y1_func(t_steps, row['x1'], row['x2'])
+        # Add small noise
+        curve += np.random.normal(0, 0.1, size=curve.shape)
+        y_data_val[label] = curve
+
+    Y_val = pd.DataFrame(y_data_val).T
+
+    ds_val = DatasetConfig(name='config_search_test', data=Y_val)
+
+    # Run config search with limited parameter space for speed
+    q = Quasar(keep_work_dir=True)
+    cs_result = q.config_search(
+        x=X_train,
+        datasets=[ds_train],
+        x_val=X_val,
+        val_datasets=[ds_val],
+        basis_functions=[2, 3],  # linear, quadratic
+        stationarities=[3, 4],   # exp, matern32
+        nugget_effects=[0.4, 0.8]
+    )
+
+    # Should have 2 * 2 * 1 * 2 = 8 configurations
+    assert len(cs_result.configs) == 8
+
+    # Check summary structure
+    summary = cs_result.summary()
+    assert len(summary) == 8
+    assert 'SRMSE' in summary.columns
+    assert 'basis_function' in summary.columns
+
+    # Check that SRMSE values are reasonable (not NaN, not huge)
+    srmse_values = summary['SRMSE'].values
+    assert all(not np.isnan(v) for v in srmse_values), 'SRMSE values contain NaN'
+    assert all(v < 1.0 for v in srmse_values), 'SRMSE values are unexpectedly large'
+
+    # Check best() returns a valid config
+    best = cs_result.best()
+    assert 'config_search_test' in best
+    best_config = best['config_search_test']
+    assert best_config.basis_function in [2, 3]
+    assert best_config.stationarity in [3, 4]
+    assert best_config.nugget_effect in [0.4, 0.8]
+
+    # Verify best config has the lowest (or tied for lowest) SRMSE
+    best_srmse = min(srmse_values)
+    # Allow for floating point tolerance
+    assert any(
+        np.isclose(res['metrics']['SRMSE'], best_srmse, rtol=1e-6) and
+        res['config'].basis_function == best_config.basis_function and
+        res['config'].nugget_effect == best_config.nugget_effect
+        for res in cs_result.results['config_search_test'].values()
+    ), 'Best config does not match the one with lowest SRMSE'
+
+    # Save report
+    report_path = Path(__file__).parent / 'reports' / 'config_search_report.html'
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    cs_result.save_html(str(report_path))
