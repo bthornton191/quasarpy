@@ -120,6 +120,7 @@ class ValidationResult:
             res = self.results[dataset_name]
             y_pred = res['y_pred']
             y_true = res['y_true']
+            x_val = res['x_val']
 
             # 1. Update Parity Plot
             # Flatten data for parity plot
@@ -128,7 +129,10 @@ class ValidationResult:
 
             # Create sample indices for mapping back
             n_samples, n_points = y_true.shape
-            sample_indices = np.repeat(np.arange(n_samples), n_points)
+            # Positional indices for coloring (0, 1, 2, ...)
+            color_indices = np.repeat(np.arange(n_samples), n_points)
+            # Actual x_val index values for display in hover
+            sample_labels = np.repeat(x_val.index.values, n_points)
 
             # Update 45-degree line range
             min_val = min(y_true_flat.min(), y_pred_flat.min())
@@ -157,12 +161,12 @@ class ValidationResult:
                     marker=dict(
                         opacity=0.7,
                         size=8,
-                        color=sample_indices,
+                        color=color_indices,
                         colorscale='Turbo',
                         showscale=False
                     ),
                     hoverlabel=dict(bgcolor=hover_colors),
-                    customdata=sample_indices,
+                    customdata=sample_labels,
                     hovertemplate="Actual: %{x}<br>Pred: %{y}<br>Sample: %{customdata}<extra></extra>"
                 ))
 
@@ -177,7 +181,9 @@ class ValidationResult:
                 curve_container.layout.display = 'none'
             else:
                 curve_container.layout.display = 'block'
-                update_curve_plot(dataset_name, sample_idx)
+                # Use actual index value for initial curve plot
+                initial_label = x_val.index[sample_idx]
+                update_curve_plot(dataset_name, initial_label)
 
             # Update Parity Plot Title with Global SRMSE
             srmse_pct = res['metrics'].get('SRMSE', 0) * 100
@@ -187,12 +193,15 @@ class ValidationResult:
             if not is_scalar:
                 parity_fig.data[0].on_click(on_parity_click)
 
-        def update_curve_plot(dataset_name, sample_idx):
+        def update_curve_plot(dataset_name, sample_label):
             res = self.results[dataset_name]
             y_pred: pd.DataFrame = res['y_pred']
             y_true: pd.DataFrame = res['y_true']
-            y_pred_sample: pd.Series = y_pred.iloc[sample_idx]
-            y_true_sample: pd.Series = y_true.iloc[sample_idx]
+            x_val = res['x_val']
+            # Convert sample label (actual index) to positional index for .iloc[]
+            sample_pos = x_val.index.get_loc(sample_label)
+            y_pred_sample: pd.Series = y_pred.iloc[sample_pos]
+            y_true_sample: pd.Series = y_true.iloc[sample_pos]
 
             # Calculate Curve-specific SRMSE
             rmse_curve = np.sqrt(np.mean((y_pred_sample.values - y_true_sample.values) ** 2))
@@ -212,7 +221,7 @@ class ValidationResult:
                 curve_fig.add_trace(go.Scatter(
                     y=y_pred_sample, name="Predicted", line=dict(color='blue', dash='dash')
                 ))
-                curve_fig.update_layout(title=f"Sample {sample_idx} (SRMSE: {srmse_curve_pct:.2f}%)")
+                curve_fig.update_layout(title=f"Sample {sample_label} (SRMSE: {srmse_curve_pct:.2f}%)")
 
         # Callbacks
         def on_dataset_change(change):
@@ -224,12 +233,12 @@ class ValidationResult:
             if self._is_scalar(ds_dropdown.value):
                 return
             if points.point_inds:
-                # Get the sample index from customdata
+                # Get the sample label (actual x_val index) from customdata
                 # points.point_inds[0] gives the index in the flattened array
-                # We stored sample_indices in customdata
+                # We stored actual index values (sample_labels) in customdata
                 flat_idx = points.point_inds[0]
-                sample_idx = trace.customdata[flat_idx]
-                update_curve_plot(ds_dropdown.value, sample_idx)
+                sample_label = trace.customdata[flat_idx]
+                update_curve_plot(ds_dropdown.value, sample_label)
 
         ds_dropdown.observe(on_dataset_change)
 
@@ -276,11 +285,15 @@ class ValidationResult:
             res = self.results[ds_name]
             y_true_flat = res['y_true'].values.flatten()
             y_pred_flat = res['y_pred'].values.flatten()
+            x_val = res['x_val']
 
             # Scatter Trace
             # Create sample indices for coloring
             n_samples, n_points = res['y_true'].shape
-            sample_indices = np.repeat(np.arange(n_samples), n_points)
+            # Positional indices for coloring
+            color_indices = np.repeat(np.arange(n_samples), n_points)
+            # Actual x_val index values for display
+            sample_labels = np.repeat(x_val.index.values, n_points)
 
             # Generate colors for hover
             if n_samples > 1:
@@ -299,11 +312,13 @@ class ValidationResult:
                 marker=dict(
                     opacity=0.7,
                     size=8,
-                    color=sample_indices,
+                    color=color_indices,
                     colorscale='Turbo',
                     showscale=False
                 ),
                 hoverlabel=dict(bgcolor=hover_colors),
+                customdata=sample_labels,
+                hovertemplate="Actual: %{x}<br>Pred: %{y}<br>Sample: %{customdata}<extra></extra>",
                 showlegend=False
             ))
 
@@ -326,8 +341,11 @@ class ValidationResult:
 
         # 2. Create Curve Figure
         fig_curve = go.Figure()
+        # Get initial sample label from first dataset
+        first_ds = self.results[dataset_names[0]]
+        initial_sample_label = first_ds['x_val'].index[0]
         fig_curve.update_layout(
-            title="Curve Comparison (Sample 0)",
+            title=f"Curve Comparison (Sample {initial_sample_label})",
             xaxis_title="Curve Point",
             yaxis_title="Value",
             margin=dict(l=20, r=20, t=40, b=20)
@@ -335,7 +353,7 @@ class ValidationResult:
 
         for i, ds_name in enumerate(dataset_names):
             res = self.results[ds_name]
-            # Only showing Sample 0 for HTML export simplicity
+            # Only showing first sample for HTML export simplicity
             y_true = res['y_true'].iloc[0]
             y_pred = res['y_pred'].iloc[0]
 
