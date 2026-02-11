@@ -58,7 +58,7 @@ class ValidationResult:
         """
         return self.results[dataset_name]['y_true'].shape[1] == 1
 
-    def dashboard(self):
+    def dashboard(self, opacity=0.7):
         """
         Displays an interactive Jupyter dashboard.
 
@@ -159,7 +159,7 @@ class ValidationResult:
                     y=y_pred_flat,
                     mode='markers',
                     marker=dict(
-                        opacity=0.7,
+                        opacity=opacity,
                         size=8,
                         color=color_indices,
                         colorscale='Turbo',
@@ -253,7 +253,7 @@ class ValidationResult:
         ])
         display(ui)
 
-    def save_html(self, filename: str):
+    def save_html(self, filename: str, opacity=0.7):
         """
         Exports the validation results to an HTML file.
 
@@ -310,7 +310,7 @@ class ValidationResult:
                 name=f"{ds_name}",
                 visible=(i == 0),
                 marker=dict(
-                    opacity=0.7,
+                    opacity=opacity,
                     size=8,
                     color=color_indices,
                     colorscale='Turbo',
