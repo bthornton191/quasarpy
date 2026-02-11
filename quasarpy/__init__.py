@@ -6,9 +6,14 @@ Provides programmatic surrogate modeling (Kriging) for simulation data.
 
 from .quasar import Quasar, DatasetConfig, KrigingConfig
 from .validation import ValidationResult, LearningCurveResult
-from .optimization import ObjectiveConfig, ConstraintConfig, OptimizationResult
+from .optimization import (
+    ObjectiveConfig,
+    AggregatedObjectiveConfig,
+    ConstraintConfig,
+    OptimizationResult,
+)
 
-__version__ = '0.5.2'
+__version__ = '0.6.0'
 __all__ = [
     'Quasar',
     'DatasetConfig',
@@ -16,6 +21,7 @@ __all__ = [
     'ValidationResult',
     'LearningCurveResult',
     'ObjectiveConfig',
+    'AggregatedObjectiveConfig',
     'ConstraintConfig',
-    'OptimizationResult'
+    'OptimizationResult',
 ]

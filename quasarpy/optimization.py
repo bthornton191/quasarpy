@@ -46,6 +46,14 @@ AGGREGATIONS: Dict[str, Callable[[np.ndarray], np.ndarray]] = {
     'rms': lambda y: np.sqrt(np.mean(y ** 2, axis=1)),
 }
 
+# Built-in cross-dataset aggregation functions
+# Input shape: (n_samples, n_datasets), output shape: (n_samples,)
+CROSS_AGGREGATIONS: Dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    'max': lambda y: np.max(y, axis=1),
+    'min': lambda y: np.min(y, axis=1),
+    'mean': lambda y: np.mean(y, axis=1),
+}
+
 
 @dataclass
 class ObjectiveConfig:
@@ -175,6 +183,171 @@ class ObjectiveConfig:
             raise TypeError(
                 f'aggregation must be str, callable, or None, got {type(self.aggregation)}'
             )
+
+
+@dataclass
+class AggregatedObjectiveConfig:
+    """
+    Configuration for an objective that aggregates across multiple datasets.
+
+    This is useful for "worst-case" optimization across load cases. For example,
+    if you have 4 load cases (up, down, left, right) and want to minimize the
+    worst-case stress, you can aggregate predictions from all 4 datasets and
+    take the maximum.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable name for the objective (used in plots and reports).
+    dataset_names : List[str]
+        List of dataset names to aggregate across. All must be datasets
+        from the trained Quasar model.
+    aggregation : str or Callable, optional
+        Method to convert each curve prediction to a scalar value.
+        Same options as ``ObjectiveConfig.aggregation``.
+        Default is ``'scalar'``.
+    cross_aggregation : str or Callable, optional
+        Method to aggregate across datasets after curve aggregation.
+
+        Built-in options:
+
+        - ``'worst'``: Worst-case across datasets. Auto-selects ``'max'`` when
+          minimizing (worst = highest value) or ``'min'`` when maximizing
+          (worst = lowest value). **This is the default.**
+        - ``'max'``: Maximum value across datasets.
+        - ``'min'``: Minimum value across datasets.
+        - ``'mean'``: Mean value across datasets.
+
+        Custom callable: A function with signature ``f(y: np.ndarray) -> np.ndarray``
+        where input shape is ``(n_samples, n_datasets)`` and output shape
+        is ``(n_samples,)``.
+
+        Default is ``'worst'``.
+
+    direction : str, optional
+        Optimization direction: ``'minimize'`` or ``'maximize'``.
+        Default is ``'minimize'``.
+
+    Examples
+    --------
+    Minimize worst-case stress across 4 load cases:
+
+    >>> obj_stress = AggregatedObjectiveConfig(
+    ...     name='Worst-Case Stress',
+    ...     dataset_names=['stress_up', 'stress_down', 'stress_left', 'stress_right'],
+    ...     aggregation='max',  # peak stress per load case
+    ...     cross_aggregation='worst',  # worst across load cases
+    ...     direction='minimize'
+    ... )
+
+    Maximize worst-case quality (lowest quality across load cases):
+
+    >>> obj_quality = AggregatedObjectiveConfig(
+    ...     name='Worst-Case Quality',
+    ...     dataset_names=['quality_up', 'quality_down', 'quality_left', 'quality_right'],
+    ...     aggregation='scalar',
+    ...     cross_aggregation='worst',  # auto-selects 'min' since maximizing
+    ...     direction='maximize'
+    ... )
+
+    Average cost across load cases:
+
+    >>> obj_avg_cost = AggregatedObjectiveConfig(
+    ...     name='Average Cost',
+    ...     dataset_names=['cost_up', 'cost_down', 'cost_left', 'cost_right'],
+    ...     aggregation='scalar',
+    ...     cross_aggregation='mean',
+    ...     direction='minimize'
+    ... )
+    """
+    name: str
+    dataset_names: List[str]
+    aggregation: Union[str, Callable[[np.ndarray], np.ndarray], None] = 'scalar'
+    cross_aggregation: Union[str, Callable[[np.ndarray], np.ndarray]] = 'worst'
+    direction: str = 'minimize'
+
+    def __post_init__(self):
+        if self.direction not in ('minimize', 'maximize'):
+            raise ValueError(f'direction must be "minimize" or "maximize", got "{self.direction}"')
+        if not self.dataset_names:
+            raise ValueError('dataset_names must contain at least one dataset')
+
+    def aggregate_curve(self, y: np.ndarray) -> np.ndarray:
+        """
+        Apply the curve aggregation function to predictions.
+
+        Parameters
+        ----------
+        y : np.ndarray
+            Predicted values with shape ``(n_samples, n_curve_points)``.
+
+        Returns
+        -------
+        np.ndarray
+            Aggregated scalar values with shape ``(n_samples,)``.
+        """
+        # Handle scalar datasets
+        if y.shape[1] == 1:
+            return y[:, 0]
+
+        # Handle aggregation specification
+        if self.aggregation is None or self.aggregation == 'scalar':
+            return y[:, 0]
+        elif callable(self.aggregation):
+            return self.aggregation(y)
+        elif isinstance(self.aggregation, str):
+            if self.aggregation not in AGGREGATIONS:
+                valid = list(AGGREGATIONS.keys()) + ['scalar']
+                raise ValueError(
+                    f'Unknown aggregation "{self.aggregation}". '
+                    f'Valid options: {valid}'
+                )
+            return AGGREGATIONS[self.aggregation](y)
+        else:
+            raise TypeError(
+                f'aggregation must be str, callable, or None, got {type(self.aggregation)}'
+            )
+
+    def aggregate_cross_dataset(self, values: np.ndarray) -> np.ndarray:
+        """
+        Apply the cross-dataset aggregation function.
+
+        Parameters
+        ----------
+        values : np.ndarray
+            Aggregated values from each dataset with shape ``(n_samples, n_datasets)``.
+
+        Returns
+        -------
+        np.ndarray
+            Final aggregated values with shape ``(n_samples,)``.
+        """
+        if callable(self.cross_aggregation):
+            return self.cross_aggregation(values)
+        elif isinstance(self.cross_aggregation, str):
+            # Handle 'worst' specially - resolve based on direction
+            if self.cross_aggregation == 'worst':
+                # When minimizing, worst = max (highest value is worst)
+                # When maximizing, worst = min (lowest value is worst)
+                agg_key = 'max' if self.direction == 'minimize' else 'min'
+            else:
+                agg_key = self.cross_aggregation
+
+            if agg_key not in CROSS_AGGREGATIONS:
+                valid = list(CROSS_AGGREGATIONS.keys()) + ['worst']
+                raise ValueError(
+                    f'Unknown cross_aggregation "{self.cross_aggregation}". '
+                    f'Valid options: {valid}'
+                )
+            return CROSS_AGGREGATIONS[agg_key](values)
+        else:
+            raise TypeError(
+                f'cross_aggregation must be str or callable, got {type(self.cross_aggregation)}'
+            )
+
+
+# Type alias for objectives (single-dataset or aggregated)
+ObjectiveType = Union[ObjectiveConfig, AggregatedObjectiveConfig]
 
 
 @dataclass
@@ -469,7 +642,7 @@ class QuasarProblem(Problem):
     def __init__(
         self,
         quasar: Quasar,
-        objectives: List[ObjectiveConfig],
+        objectives: List[ObjectiveType],
         bounds: Dict[str, Tuple[float, float]],
         constraints: Optional[List[ConstraintConfig]] = None
     ):
@@ -515,8 +688,17 @@ class QuasarProblem(Problem):
         # Evaluate objectives
         F = np.zeros((len(X), self.n_obj))
         for i, obj in enumerate(self.objectives):
-            y = predictions[obj.dataset_name].values
-            f_val = obj.aggregate(y)
+            if isinstance(obj, AggregatedObjectiveConfig):
+                # Aggregate across multiple datasets
+                values = np.zeros((len(X), len(obj.dataset_names)))
+                for j, ds_name in enumerate(obj.dataset_names):
+                    y = predictions[ds_name].values
+                    values[:, j] = obj.aggregate_curve(y)
+                f_val = obj.aggregate_cross_dataset(values)
+            else:
+                # Standard single-dataset objective
+                y = predictions[obj.dataset_name].values
+                f_val = obj.aggregate(y)
 
             # Handle maximize by negating
             if obj.direction == 'maximize':
@@ -606,7 +788,7 @@ class OptimizationResult:
     def __init__(
         self,
         pymoo_result,
-        objectives: List[ObjectiveConfig],
+        objectives: List[ObjectiveType],
         constraints: List[ConstraintConfig],
         param_names: List[str],
         history: List[dict]
@@ -1172,7 +1354,7 @@ ALGORITHMS = {
 
 def run_optimization(
     quasar: Quasar,
-    objectives: List[ObjectiveConfig],
+    objectives: List[ObjectiveType],
     bounds: Dict[str, Tuple[float, float]],
     constraints: Optional[List[ConstraintConfig]] = None,
     algorithm: str = 'auto',

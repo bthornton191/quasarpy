@@ -14,11 +14,13 @@ from pathlib import Path
 
 from quasarpy.optimization import (
     ObjectiveConfig,
+    AggregatedObjectiveConfig,
     ConstraintConfig,
     OptimizationResult,
     QuasarProblem,
     run_optimization,
-    AGGREGATIONS
+    AGGREGATIONS,
+    CROSS_AGGREGATIONS,
 )
 
 
@@ -535,3 +537,325 @@ class TestOptimizationIntegration:
         content = html_path.read_text()
         assert 'Pareto' in content
         assert 'plotly' in content.lower()
+
+
+# -----------------------------------------------------------------------------
+# Unit Tests: AggregatedObjectiveConfig
+# -----------------------------------------------------------------------------
+
+class TestAggregatedObjectiveConfig:
+    """Tests for AggregatedObjectiveConfig dataclass."""
+
+    def test_valid_directions(self):
+        """Test that valid directions are accepted."""
+        obj_min = AggregatedObjectiveConfig(
+            name='test', dataset_names=['ds1', 'ds2'], direction='minimize'
+        )
+        obj_max = AggregatedObjectiveConfig(
+            name='test', dataset_names=['ds1', 'ds2'], direction='maximize'
+        )
+        assert obj_min.direction == 'minimize'
+        assert obj_max.direction == 'maximize'
+
+    def test_invalid_direction_raises(self):
+        """Test that invalid direction raises ValueError."""
+        with pytest.raises(ValueError, match='direction must be'):
+            AggregatedObjectiveConfig(
+                name='test', dataset_names=['ds1'], direction='min'
+            )
+
+    def test_empty_dataset_names_raises(self):
+        """Test that empty dataset_names raises ValueError."""
+        with pytest.raises(ValueError, match='must contain at least one dataset'):
+            AggregatedObjectiveConfig(name='test', dataset_names=[])
+
+    def test_aggregate_curve_scalar(self):
+        """Test curve aggregation for scalar datasets."""
+        obj = AggregatedObjectiveConfig(
+            name='test', dataset_names=['ds1'], aggregation='scalar'
+        )
+        y = np.array([[1.0], [2.0], [3.0]])
+        result = obj.aggregate_curve(y)
+        np.testing.assert_array_equal(result, [1.0, 2.0, 3.0])
+
+    def test_aggregate_curve_max(self):
+        """Test max curve aggregation."""
+        obj = AggregatedObjectiveConfig(
+            name='test', dataset_names=['ds1'], aggregation='max'
+        )
+        y = np.array([[1, 5, 3], [2, 8, 4]])
+        result = obj.aggregate_curve(y)
+        np.testing.assert_array_equal(result, [5, 8])
+
+    def test_aggregate_curve_callable(self):
+        """Test custom callable curve aggregation."""
+        obj = AggregatedObjectiveConfig(
+            name='test',
+            dataset_names=['ds1'],
+            aggregation=lambda y: np.median(y, axis=1)
+        )
+        y = np.array([[1, 2, 3], [4, 5, 6]])
+        result = obj.aggregate_curve(y)
+        np.testing.assert_array_equal(result, [2, 5])
+
+    def test_cross_aggregation_max(self):
+        """Test max cross-dataset aggregation."""
+        obj = AggregatedObjectiveConfig(
+            name='test', dataset_names=['ds1', 'ds2'], cross_aggregation='max'
+        )
+        values = np.array([[1, 5], [3, 2], [4, 4]])  # 3 samples, 2 datasets
+        result = obj.aggregate_cross_dataset(values)
+        np.testing.assert_array_equal(result, [5, 3, 4])
+
+    def test_cross_aggregation_min(self):
+        """Test min cross-dataset aggregation."""
+        obj = AggregatedObjectiveConfig(
+            name='test', dataset_names=['ds1', 'ds2'], cross_aggregation='min'
+        )
+        values = np.array([[1, 5], [3, 2], [4, 4]])
+        result = obj.aggregate_cross_dataset(values)
+        np.testing.assert_array_equal(result, [1, 2, 4])
+
+    def test_cross_aggregation_mean(self):
+        """Test mean cross-dataset aggregation."""
+        obj = AggregatedObjectiveConfig(
+            name='test', dataset_names=['ds1', 'ds2'], cross_aggregation='mean'
+        )
+        values = np.array([[1.0, 5.0], [3.0, 7.0]])
+        result = obj.aggregate_cross_dataset(values)
+        np.testing.assert_array_equal(result, [3.0, 5.0])
+
+    def test_cross_aggregation_worst_minimize(self):
+        """Test 'worst' resolves to 'max' when minimizing."""
+        obj = AggregatedObjectiveConfig(
+            name='test',
+            dataset_names=['ds1', 'ds2'],
+            cross_aggregation='worst',
+            direction='minimize'
+        )
+        values = np.array([[1, 5], [3, 2]])
+        result = obj.aggregate_cross_dataset(values)
+        # Minimizing: worst = highest value
+        np.testing.assert_array_equal(result, [5, 3])
+
+    def test_cross_aggregation_worst_maximize(self):
+        """Test 'worst' resolves to 'min' when maximizing."""
+        obj = AggregatedObjectiveConfig(
+            name='test',
+            dataset_names=['ds1', 'ds2'],
+            cross_aggregation='worst',
+            direction='maximize'
+        )
+        values = np.array([[1, 5], [3, 2]])
+        result = obj.aggregate_cross_dataset(values)
+        # Maximizing: worst = lowest value
+        np.testing.assert_array_equal(result, [1, 2])
+
+    def test_cross_aggregation_callable(self):
+        """Test custom callable cross-dataset aggregation."""
+        obj = AggregatedObjectiveConfig(
+            name='test',
+            dataset_names=['ds1', 'ds2', 'ds3'],
+            cross_aggregation=lambda y: np.std(y, axis=1)
+        )
+        values = np.array([[1.0, 2.0, 3.0], [4.0, 4.0, 4.0]])
+        result = obj.aggregate_cross_dataset(values)
+        np.testing.assert_array_almost_equal(result, [np.std([1, 2, 3]), 0.0])
+
+    def test_invalid_cross_aggregation_raises(self):
+        """Test that invalid cross_aggregation string raises ValueError."""
+        obj = AggregatedObjectiveConfig(
+            name='test', dataset_names=['ds1'], cross_aggregation='invalid'
+        )
+        with pytest.raises(ValueError, match='Unknown cross_aggregation'):
+            obj.aggregate_cross_dataset(np.array([[1, 2]]))
+
+
+# -----------------------------------------------------------------------------
+# Unit Tests: QuasarProblem with AggregatedObjectiveConfig
+# -----------------------------------------------------------------------------
+
+class TestQuasarProblemAggregated:
+    """Tests for QuasarProblem with aggregated objectives."""
+
+    @pytest.fixture
+    def mock_quasar_multi_dataset(self):
+        """Create a mock Quasar with 4 load case datasets."""
+        mock_quasar = Mock()
+
+        def mock_predict(x_df):
+            n = len(x_df)
+            # Simulate 4 load cases with different stress levels
+            return {
+                'stress_up': pd.DataFrame(
+                    np.ones((n, 1)) * x_df['x1'].values.reshape(-1, 1) * 10
+                ),
+                'stress_down': pd.DataFrame(
+                    np.ones((n, 1)) * x_df['x1'].values.reshape(-1, 1) * 8
+                ),
+                'stress_left': pd.DataFrame(
+                    np.ones((n, 1)) * x_df['x1'].values.reshape(-1, 1) * 12
+                ),
+                'stress_right': pd.DataFrame(
+                    np.ones((n, 1)) * x_df['x1'].values.reshape(-1, 1) * 9
+                ),
+                'cost': pd.DataFrame(
+                    np.ones((n, 1)) * x_df['x2'].values.reshape(-1, 1) * 100
+                ),
+            }
+
+        mock_quasar.predict = mock_predict
+        return mock_quasar
+
+    def test_aggregated_objective_evaluation(self, mock_quasar_multi_dataset):
+        """Test that aggregated objectives are evaluated correctly."""
+        objectives = [
+            AggregatedObjectiveConfig(
+                name='Worst Stress',
+                dataset_names=['stress_up', 'stress_down', 'stress_left', 'stress_right'],
+                aggregation='scalar',
+                cross_aggregation='max',
+                direction='minimize'
+            ),
+            ObjectiveConfig(
+                name='Cost',
+                dataset_name='cost',
+                aggregation='scalar',
+                direction='minimize'
+            )
+        ]
+        bounds = {'x1': (0, 1), 'x2': (0, 1)}
+
+        problem = QuasarProblem(mock_quasar_multi_dataset, objectives, bounds)
+
+        # Evaluate
+        X = np.array([[0.5, 0.3], [1.0, 0.5]])
+        out = {}
+        problem._evaluate(X, out)
+
+        # x1=0.5: stress_up=5, down=4, left=6, right=4.5 -> max=6
+        # x1=1.0: stress_up=10, down=8, left=12, right=9 -> max=12
+        expected_stress = [6.0, 12.0]
+        # x2=0.3: cost=30, x2=0.5: cost=50
+        expected_cost = [30.0, 50.0]
+
+        np.testing.assert_array_almost_equal(out['F'][:, 0], expected_stress)
+        np.testing.assert_array_almost_equal(out['F'][:, 1], expected_cost)
+
+    def test_worst_case_minimize(self, mock_quasar_multi_dataset):
+        """Test worst-case with minimize direction."""
+        objectives = [
+            AggregatedObjectiveConfig(
+                name='Worst Stress',
+                dataset_names=['stress_up', 'stress_down', 'stress_left', 'stress_right'],
+                aggregation='scalar',
+                cross_aggregation='worst',  # Should resolve to 'max'
+                direction='minimize'
+            )
+        ]
+        bounds = {'x1': (0, 1), 'x2': (0, 1)}
+        problem = QuasarProblem(mock_quasar_multi_dataset, objectives, bounds)
+
+        X = np.array([[1.0, 0.0]])
+        out = {}
+        problem._evaluate(X, out)
+
+        # stress_left = 12 is highest
+        np.testing.assert_array_almost_equal(out['F'][:, 0], [12.0])
+
+    def test_worst_case_maximize(self):
+        """Test worst-case with maximize direction."""
+        mock_quasar = Mock()
+
+        def mock_predict(x_df):
+            n = len(x_df)
+            return {
+                'quality_a': pd.DataFrame(np.ones((n, 1)) * 0.9),
+                'quality_b': pd.DataFrame(np.ones((n, 1)) * 0.7),
+                'quality_c': pd.DataFrame(np.ones((n, 1)) * 0.8),
+            }
+
+        mock_quasar.predict = mock_predict
+
+        objectives = [
+            AggregatedObjectiveConfig(
+                name='Worst Quality',
+                dataset_names=['quality_a', 'quality_b', 'quality_c'],
+                aggregation='scalar',
+                cross_aggregation='worst',  # Should resolve to 'min'
+                direction='maximize'
+            )
+        ]
+        bounds = {'x1': (0, 1)}
+        problem = QuasarProblem(mock_quasar, objectives, bounds)
+
+        X = np.array([[0.5]])
+        out = {}
+        problem._evaluate(X, out)
+
+        # quality_b = 0.7 is lowest = worst when maximizing
+        # Since maximize, objective is negated
+        np.testing.assert_array_almost_equal(out['F'][:, 0], [-0.7])
+
+    def test_mixed_objectives(self, mock_quasar_multi_dataset):
+        """Test mixing standard and aggregated objectives."""
+        objectives = [
+            AggregatedObjectiveConfig(
+                name='Worst Stress',
+                dataset_names=['stress_up', 'stress_down'],
+                aggregation='scalar',
+                cross_aggregation='max',
+                direction='minimize'
+            ),
+            ObjectiveConfig(
+                name='Cost',
+                dataset_name='cost',
+                aggregation='scalar',
+                direction='minimize'
+            )
+        ]
+        bounds = {'x1': (0, 1), 'x2': (0, 1)}
+        problem = QuasarProblem(mock_quasar_multi_dataset, objectives, bounds)
+
+        assert problem.n_obj == 2
+
+        X = np.array([[0.5, 0.4]])
+        out = {}
+        problem._evaluate(X, out)
+
+        # stress_up=5, stress_down=4 -> max=5
+        # cost=40
+        np.testing.assert_array_almost_equal(out['F'][0], [5.0, 40.0])
+
+    def test_curve_then_cross_aggregation(self):
+        """Test curve aggregation followed by cross-dataset aggregation."""
+        mock_quasar = Mock()
+
+        def mock_predict(x_df):
+            n = len(x_df)
+            # Each dataset returns curves (n_samples, 3 points)
+            return {
+                'curve_a': pd.DataFrame(np.array([[1, 5, 3]] * n)),  # max=5
+                'curve_b': pd.DataFrame(np.array([[2, 8, 1]] * n)),  # max=8
+            }
+
+        mock_quasar.predict = mock_predict
+
+        objectives = [
+            AggregatedObjectiveConfig(
+                name='Worst Peak',
+                dataset_names=['curve_a', 'curve_b'],
+                aggregation='max',  # Curve -> scalar (take max of each curve)
+                cross_aggregation='max',  # Cross-dataset (take max across datasets)
+                direction='minimize'
+            )
+        ]
+        bounds = {'x1': (0, 1)}
+        problem = QuasarProblem(mock_quasar, objectives, bounds)
+
+        X = np.array([[0.5]])
+        out = {}
+        problem._evaluate(X, out)
+
+        # curve_a max=5, curve_b max=8 -> cross max=8
+        np.testing.assert_array_almost_equal(out['F'][:, 0], [8.0])
