@@ -1079,24 +1079,91 @@ class OptimizationResult:
             f.write(html_content)
 
 
+def _get_default_ref_dirs(n_obj: int, pop_size: int, **kw) -> np.ndarray:
+    """
+    Generate default reference directions for many-objective algorithms.
+
+    For 5 or fewer objectives, uses Das-Dennis with adaptive partitions.
+    For 6+ objectives, uses energy-based method with exact point count
+    to avoid combinatorial explosion.
+
+    Parameters
+    ----------
+    n_obj : int
+        Number of objectives.
+    pop_size : int
+        Population size (used as default n_points for energy method).
+    **kw : dict
+        Optional overrides:
+
+        - ``ref_dirs``: Pre-computed reference directions (returned as-is)
+        - ``ref_dirs_method``: ``'das-dennis'``, ``'energy'``, or ``'auto'``
+        - ``n_ref_points``: Number of reference points for energy method
+        - ``n_partitions``: Number of partitions for Das-Dennis method
+
+    Returns
+    -------
+    np.ndarray
+        Reference directions with shape ``(n_points, n_obj)``.
+    """
+    # Allow user to pass pre-computed ref_dirs
+    if 'ref_dirs' in kw:
+        return kw.pop('ref_dirs')
+
+    method = kw.pop('ref_dirs_method', 'auto')
+    n_points = kw.pop('n_ref_points', None)
+    n_partitions = kw.pop('n_partitions', None)
+
+    if method == 'auto':
+        # Use Das-Dennis for few objectives, energy for many
+        method = 'das-dennis' if n_obj <= 5 else 'energy'
+
+    if method == 'das-dennis':
+        # Adaptive partitions to keep ref_dirs count reasonable
+        if n_partitions is None:
+            n_partitions = max(2, 8 - n_obj)  # e.g., 6 for 2 obj, 3 for 5 obj
+        return get_reference_directions('das-dennis', n_obj, n_partitions=n_partitions)
+    elif method == 'energy':
+        # Energy method gives exact control over number of points
+        if n_points is None:
+            n_points = pop_size
+        return get_reference_directions('energy', n_obj, n_points=n_points)
+    else:
+        # Pass through to pymoo for other methods (layer-energy, etc.)
+        return get_reference_directions(method, n_obj, n_points=n_points or pop_size)
+
+
+def _make_nsga3(n_obj: int, pop_size: int, **kw):
+    """Create NSGA3 with smart reference direction defaults."""
+    ref_dirs = _get_default_ref_dirs(n_obj, pop_size, **kw)
+    return NSGA3(ref_dirs=ref_dirs, pop_size=pop_size, **kw)
+
+
+def _make_moead(n_obj: int, pop_size: int, **kw):
+    """Create MOEAD with smart reference direction defaults."""
+    ref_dirs = _get_default_ref_dirs(n_obj, pop_size, **kw)
+    n_neighbors = kw.pop('n_neighbors', 15)
+    prob_neighbor_mating = kw.pop('prob_neighbor_mating', 0.7)
+    return MOEAD(
+        ref_dirs=ref_dirs,
+        n_neighbors=n_neighbors,
+        prob_neighbor_mating=prob_neighbor_mating,
+        **kw
+    )
+
+
+def _make_ctaea(n_obj: int, pop_size: int, **kw):
+    """Create CTAEA with smart reference direction defaults."""
+    ref_dirs = _get_default_ref_dirs(n_obj, pop_size, **kw)
+    return CTAEA(ref_dirs=ref_dirs, **kw)
+
+
 # Algorithm factory
 ALGORITHMS = {
     'NSGA2': lambda n_obj, pop_size, **kw: NSGA2(pop_size=pop_size, **kw),
-    'NSGA3': lambda n_obj, pop_size, **kw: NSGA3(
-        ref_dirs=get_reference_directions('das-dennis', n_obj, n_partitions=12),
-        pop_size=pop_size,
-        **kw
-    ),
-    'MOEAD': lambda n_obj, pop_size, **kw: MOEAD(
-        ref_dirs=get_reference_directions('das-dennis', n_obj, n_partitions=12),
-        n_neighbors=15,
-        prob_neighbor_mating=0.7,
-        **kw
-    ),
-    'CTAEA': lambda n_obj, pop_size, **kw: CTAEA(
-        ref_dirs=get_reference_directions('das-dennis', n_obj, n_partitions=12),
-        **kw
-    ),
+    'NSGA3': _make_nsga3,
+    'MOEAD': _make_moead,
+    'CTAEA': _make_ctaea,
     'AGEMOEA': lambda n_obj, pop_size, **kw: AGEMOEA(pop_size=pop_size, **kw),
     'AGEMOEA2': lambda n_obj, pop_size, **kw: AGEMOEA2(pop_size=pop_size, **kw),
     'SMSEMOA': lambda n_obj, pop_size, **kw: SMSEMOA(pop_size=pop_size, **kw),
@@ -1156,11 +1223,53 @@ def run_optimization(
         Whether to print progress. Default is True.
     **algorithm_kwargs
         Additional keyword arguments passed to the algorithm constructor.
+        For reference-direction algorithms (NSGA3, MOEAD, CTAEA), you can pass:
+
+        - ``ref_dirs``: Pre-computed reference directions array
+        - ``ref_dirs_method``: ``'das-dennis'``, ``'energy'``, or ``'auto'`` (default)
+        - ``n_ref_points``: Number of points for ``'energy'`` method
+        - ``n_partitions``: Number of partitions for ``'das-dennis'`` method
+
+        By default, ``'auto'`` uses Das-Dennis for ≤5 objectives and energy-based
+        for 6+ objectives to avoid combinatorial explosion.
 
     Returns
     -------
     OptimizationResult
         Object containing Pareto front, Pareto set, and visualization methods.
+
+    Examples
+    --------
+    Basic usage with auto-selected algorithm:
+
+    >>> result = run_optimization(quasar, objectives, bounds)
+
+    Many-objective optimization (6+ objectives) - uses energy method by default:
+
+    >>> result = run_optimization(
+    ...     quasar, objectives, bounds,
+    ...     pop_size=200,  # Also sets n_ref_points=200 by default
+    ...     n_gen=150
+    ... )
+
+    Override reference direction generation:
+
+    >>> result = run_optimization(
+    ...     quasar, objectives, bounds,
+    ...     algorithm='NSGA3',
+    ...     n_ref_points=150,  # Exact number of reference directions
+    ...     ref_dirs_method='energy'
+    ... )
+
+    Use pre-computed reference directions:
+
+    >>> from pymoo.util.ref_dirs import get_reference_directions
+    >>> ref_dirs = get_reference_directions('energy', n_obj=12, n_points=100)
+    >>> result = run_optimization(
+    ...     quasar, objectives, bounds,
+    ...     algorithm='NSGA3',
+    ...     ref_dirs=ref_dirs
+    ... )
     """
     # Create problem
     problem = QuasarProblem(quasar, objectives, bounds, constraints)

@@ -8,7 +8,7 @@ from .quasar import Quasar, DatasetConfig, KrigingConfig
 from .validation import ValidationResult, LearningCurveResult
 from .optimization import ObjectiveConfig, ConstraintConfig, OptimizationResult
 
-__version__ = '0.5.1'
+__version__ = '0.5.2'
 __all__ = [
     'Quasar',
     'DatasetConfig',
