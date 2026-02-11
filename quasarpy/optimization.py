@@ -7,7 +7,7 @@ optimization using trained Quasar surrogate models with pymoo algorithms.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 import numpy as np
 import pandas as pd
@@ -27,6 +27,9 @@ from pymoo.algorithms.moo.sms import SMSEMOA
 from pymoo.util.ref_dirs import get_reference_directions
 from pymoo.optimize import minimize
 from pymoo.core.callback import Callback
+
+if TYPE_CHECKING:
+    from .quasar import Quasar
 
 
 # Built-in aggregation functions for curves
@@ -181,17 +184,25 @@ class ConstraintConfig:
 
     Constraints restrict the feasible design space. pymoo uses the convention
     that a constraint is satisfied when ``g(x) <= 0``. This class provides
-    a convenient interface for common constraint types.
+    two modes of operation:
+
+    1. **Threshold-based** (default): Specify ``dataset_name``, ``aggregation``,
+       ``constraint_type``, and ``threshold`` to constrain model outputs.
+
+    2. **Function-based**: Provide a custom ``func`` callable for full flexibility,
+       including constraints on inputs, outputs, or combinations thereof.
 
     Parameters
     ----------
     name : str
         Human-readable name for the constraint (used in reports).
-    dataset_name : str
+    dataset_name : str, optional
         Name of the dataset from the trained Quasar model to use.
+        Required for threshold-based constraints, ignored if ``func`` is provided.
     aggregation : str or Callable, optional
         Method to convert curve predictions to scalar values.
         Same options as ``ObjectiveConfig.aggregation``.
+        Ignored if ``func`` is provided.
         Default is ``'scalar'``.
     constraint_type : str, optional
         Type of constraint:
@@ -201,11 +212,12 @@ class ConstraintConfig:
         - ``'=='`` or ``'eq'``: |value - threshold| <= tolerance (equality)
         - ``'range'``: lower <= value <= upper
 
+        Ignored if ``func`` is provided.
         Default is ``'<='``.
 
     threshold : float, optional
         The constraint threshold for ``'<='``, ``'>='``, and ``'=='`` types.
-        Required for these constraint types.
+        Required for these constraint types (unless ``func`` is provided).
     lower : float, optional
         Lower bound for ``'range'`` constraint type.
     upper : float, optional
@@ -214,6 +226,23 @@ class ConstraintConfig:
         Tolerance for equality constraints (``'=='``).
         The constraint is satisfied when ``|value - threshold| <= tolerance``.
         Default is ``1e-6``.
+    func : Callable, optional
+        Custom constraint function with signature:
+
+        ``func(predictions: Dict[str, pd.DataFrame], X: pd.DataFrame) -> np.ndarray``
+
+        Where:
+
+        - ``predictions``: Dictionary of model predictions (from ``Quasar.predict()``).
+          Keys are dataset names, values are DataFrames with shape
+          ``(n_samples, n_curve_points)``.
+        - ``X``: Input parameter DataFrame with shape ``(n_samples, n_params)``.
+          Column names match the parameter names from ``bounds``.
+
+        The function must return an array with shape ``(n_samples,)`` or
+        ``(n_samples, n_constraints)`` where values ``<= 0`` indicate feasibility.
+
+        When ``func`` is provided, all other parameters except ``name`` are ignored.
 
     Notes
     -----
@@ -266,17 +295,47 @@ class ConstraintConfig:
     ...     threshold=100.0,
     ...     tolerance=0.1
     ... )
+
+    Custom function constraint on inputs (x1 + x2 <= 10):
+
+    >>> c_input = ConstraintConfig(
+    ...     name='Parameter Sum Limit',
+    ...     func=lambda preds, X: X['x1'].values + X['x2'].values - 10.0
+    ... )
+
+    Custom function constraint combining inputs and outputs:
+
+    >>> def efficiency_constraint(predictions, X):
+    ...     # power / weight >= 50, where power is predicted and weight is input
+    ...     power = predictions['power'].values[:, 0]  # scalar dataset
+    ...     weight = X['weight'].values
+    ...     # Rearrange: power / weight >= 50  =>  50 - power / weight <= 0
+    ...     return 50.0 - power / weight
+    >>>
+    >>> c_efficiency = ConstraintConfig(
+    ...     name='Min Power-to-Weight Ratio',
+    ...     func=efficiency_constraint
+    ... )
     """
     name: str
-    dataset_name: str
+    dataset_name: Optional[str] = None
     aggregation: Union[str, Callable[[np.ndarray], np.ndarray], None] = 'scalar'
     constraint_type: str = '<='
     threshold: Optional[float] = None
     lower: Optional[float] = None
     upper: Optional[float] = None
     tolerance: float = 1e-6
+    func: Optional[Callable[[Dict[str, pd.DataFrame], pd.DataFrame], np.ndarray]] = None
 
     def __post_init__(self):
+        # If func is provided, skip validation of threshold-based parameters
+        if self.func is not None:
+            return
+
+        # For threshold-based constraints, require dataset_name
+        if self.dataset_name is None:
+            raise ValueError('dataset_name required when func is not provided')
+
         valid_types = ('<=', 'le', '>=', 'ge', '==', 'eq', 'range')
         if self.constraint_type not in valid_types:
             raise ValueError(f'constraint_type must be one of {valid_types}')
@@ -305,21 +364,44 @@ class ConstraintConfig:
         else:
             raise TypeError('aggregation must be str, callable, or None')
 
-    def evaluate(self, values: np.ndarray) -> np.ndarray:
+    def evaluate(
+        self,
+        values: Optional[np.ndarray] = None,
+        predictions: Optional[Dict[str, pd.DataFrame]] = None,
+        X: Optional[pd.DataFrame] = None
+    ) -> np.ndarray:
         """
         Evaluate constraint violation (g <= 0 is feasible).
 
         Parameters
         ----------
-        values : np.ndarray
+        values : np.ndarray, optional
             Aggregated values with shape ``(n_samples,)``.
+            Used for threshold-based constraints (when ``func`` is None).
+        predictions : Dict[str, pd.DataFrame], optional
+            Model predictions from ``Quasar.predict()``.
+            Used for function-based constraints (when ``func`` is provided).
+        X : pd.DataFrame, optional
+            Input parameters with shape ``(n_samples, n_params)``.
+            Used for function-based constraints (when ``func`` is provided).
 
         Returns
         -------
         np.ndarray
             Constraint values where <= 0 means feasible.
+            Shape is ``(n_samples,)`` or ``(n_samples, n_constraints)``.
             For ``'range'`` type, returns two columns (lower and upper bounds).
         """
+        # Function-based constraint
+        if self.func is not None:
+            if predictions is None or X is None:
+                raise ValueError('predictions and X required for func-based constraint')
+            return self.func(predictions, X)
+
+        # Threshold-based constraint
+        if values is None:
+            raise ValueError('values required for threshold-based constraint')
+
         if self.constraint_type in ('<=', 'le'):
             # value <= threshold  =>  value - threshold <= 0
             return values - self.threshold
@@ -338,7 +420,15 @@ class ConstraintConfig:
 
     @property
     def n_constraints(self) -> int:
-        """Number of constraint functions (range type produces 2)."""
+        """
+        Number of constraint functions.
+
+        For threshold-based constraints, range type produces 2 constraints.
+        For function-based constraints, this returns 1 (the function itself
+        may return multiple columns, which is handled during evaluation).
+        """
+        if self.func is not None:
+            return 1  # Will be updated during first evaluation if needed
         return 2 if self.constraint_type == 'range' else 1
 
 
@@ -378,7 +468,7 @@ class QuasarProblem(Problem):
 
     def __init__(
         self,
-        quasar,
+        quasar: Quasar,
         objectives: List[ObjectiveConfig],
         bounds: Dict[str, Tuple[float, float]],
         constraints: Optional[List[ConstraintConfig]] = None
@@ -440,11 +530,16 @@ class QuasarProblem(Problem):
         if self.constraints:
             G_list = []
             for constr in self.constraints:
-                y = predictions[constr.dataset_name].values
-                values = constr.aggregate(y)
-                g = constr.evaluate(values)
+                # Function-based constraint
+                if constr.func is not None:
+                    g = constr.evaluate(predictions=predictions, X=x_df)
+                else:
+                    # Threshold-based constraint
+                    y = predictions[constr.dataset_name].values
+                    values = constr.aggregate(y)
+                    g = constr.evaluate(values=values)
 
-                # ensure 2D
+                # Ensure 2D
                 if g.ndim == 1:
                     g = g.reshape(-1, 1)
                 G_list.append(g)
@@ -1009,7 +1104,7 @@ ALGORITHMS = {
 
 
 def run_optimization(
-    quasar,
+    quasar: Quasar,
     objectives: List[ObjectiveConfig],
     bounds: Dict[str, Tuple[float, float]],
     constraints: Optional[List[ConstraintConfig]] = None,

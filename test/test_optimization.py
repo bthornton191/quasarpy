@@ -147,14 +147,14 @@ class TestConstraintConfig:
         """Test <= constraint: value - threshold <= 0."""
         c = ConstraintConfig(name='c', dataset_name='ds', constraint_type='<=', threshold=10.0)
         values = np.array([5.0, 10.0, 15.0])
-        result = c.evaluate(values)
+        result = c.evaluate(values=values)
         np.testing.assert_array_equal(result, [-5.0, 0.0, 5.0])
 
     def test_ge_constraint(self):
         """Test >= constraint: threshold - value <= 0."""
         c = ConstraintConfig(name='c', dataset_name='ds', constraint_type='>=', threshold=10.0)
         values = np.array([5.0, 10.0, 15.0])
-        result = c.evaluate(values)
+        result = c.evaluate(values=values)
         np.testing.assert_array_equal(result, [5.0, 0.0, -5.0])
 
     def test_eq_constraint(self):
@@ -164,7 +164,7 @@ class TestConstraintConfig:
             threshold=10.0, tolerance=0.5
         )
         values = np.array([10.0, 10.4, 10.6])
-        result = c.evaluate(values)
+        result = c.evaluate(values=values)
         np.testing.assert_array_almost_equal(result, [-0.5, -0.1, 0.1])
 
     def test_range_constraint(self):
@@ -174,7 +174,7 @@ class TestConstraintConfig:
             lower=5.0, upper=15.0
         )
         values = np.array([3.0, 10.0, 20.0])
-        result = c.evaluate(values)
+        result = c.evaluate(values=values)
         # g_lower = lower - value, g_upper = value - upper
         expected = np.array([[2.0, -12.0], [-5.0, -5.0], [-15.0, 5.0]])
         np.testing.assert_array_equal(result, expected)
@@ -203,6 +203,53 @@ class TestConstraintConfig:
         """Test that invalid constraint_type raises ValueError."""
         with pytest.raises(ValueError, match='constraint_type must be one of'):
             ConstraintConfig(name='c', dataset_name='ds', constraint_type='<')
+
+    def test_func_based_constraint(self):
+        """Test function-based constraint evaluation."""
+        def my_func(predictions, X):
+            # x1 + x2 <= 10  =>  x1 + x2 - 10 <= 0
+            return X['x1'].values + X['x2'].values - 10.0
+
+        c = ConstraintConfig(name='input_sum', func=my_func)
+
+        predictions = {}  # Not used in this constraint
+        X = pd.DataFrame({'x1': [3.0, 5.0, 8.0], 'x2': [2.0, 5.0, 4.0]})
+
+        result = c.evaluate(predictions=predictions, X=X)
+        # 3+2-10=-5, 5+5-10=0, 8+4-10=2
+        np.testing.assert_array_equal(result, [-5.0, 0.0, 2.0])
+
+    def test_func_based_constraint_with_predictions(self):
+        """Test function-based constraint using predictions."""
+        def my_func(predictions, X):
+            # stress / weight <= 100  =>  stress / weight - 100 <= 0
+            stress = predictions['stress'].values[:, 0]
+            weight = X['weight'].values
+            return stress / weight - 100.0
+
+        c = ConstraintConfig(name='stress_to_weight', func=my_func)
+
+        predictions = {'stress': pd.DataFrame({'0': [500.0, 900.0, 1200.0]})}
+        X = pd.DataFrame({'weight': [5.0, 10.0, 10.0]})
+
+        result = c.evaluate(predictions=predictions, X=X)
+        # 500/5-100=0, 900/10-100=-10, 1200/10-100=20
+        np.testing.assert_array_equal(result, [0.0, -10.0, 20.0])
+
+    def test_func_skips_threshold_validation(self):
+        """Test that func-based constraints don't require dataset_name/threshold."""
+        # Should not raise even without dataset_name/threshold
+        c = ConstraintConfig(
+            name='custom',
+            func=lambda preds, X: X['x'].values - 5.0
+        )
+        assert c.func is not None
+        assert c.dataset_name is None
+
+    def test_missing_dataset_name_raises_when_no_func(self):
+        """Test that dataset_name is required when func is not provided."""
+        with pytest.raises(ValueError, match='dataset_name required'):
+            ConstraintConfig(name='c', constraint_type='<=', threshold=10.0)
 
 
 # -----------------------------------------------------------------------------

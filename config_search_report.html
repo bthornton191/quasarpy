@@ -1,0 +1,187 @@
+
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Configuration Search Report</title>
+            <style>
+                body { font-family: sans-serif; margin: 0; padding: 20px; }
+                .container {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 20px;
+                    justify-content: center;
+                }
+                .controls {
+                    flex: 0 0 300px;
+                    padding: 15px;
+                    border: 1px solid #ddd;
+                    border-radius: 5px;
+                    background: #f9f9f9;
+                }
+                .controls h3 { margin-top: 0; }
+                .controls select {
+                    width: 100%;
+                    padding: 8px;
+                    margin-bottom: 15px;
+                    font-size: 14px;
+                }
+                .slider-row {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    margin: 8px 0;
+                }
+                .slider-row label {
+                    min-width: 80px;
+                    font-weight: bold;
+                }
+                .slider-row input[type="range"] {
+                    flex: 1;
+                }
+                .slider-row span {
+                    min-width: 40px;
+                    text-align: right;
+                }
+                .reset-btn {
+                    width: 100%;
+                    padding: 10px;
+                    margin-top: 15px;
+                    background: #f0ad4e;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 14px;
+                }
+                .reset-btn:hover { background: #ec971f; }
+                .plot-div {
+                    flex: 1 1 600px;
+                    min-width: 400px;
+                    max-width: 900px;
+                    height: 500px;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Configuration Search Report</h1>
+            <div class="container">
+                <div class="controls">
+                    <h3>Settings</h3>
+                    <label for="dataset-select">Dataset:</label>
+                    <select id="dataset-select" onchange="updateWeights()">
+                        <option value="Dataset1">Dataset1</option>
+<option value="Dataset2">Dataset2</option>
+                    </select>
+                    <h4>Metric Weights</h4>
+                    <div class="slider-row">
+                <label for="rmse-weight">RMSE:</label>
+                <input type="range" id="rmse-weight"
+                       min="0" max="1" step="0.05" value="0.0"
+                       oninput="updateWeights()">
+                <span id="rmse-value">0.00</span>
+            </div>
+<div class="slider-row">
+                <label for="mae-weight">MAE:</label>
+                <input type="range" id="mae-weight"
+                       min="0" max="1" step="0.05" value="0.0"
+                       oninput="updateWeights()">
+                <span id="mae-value">0.00</span>
+            </div>
+<div class="slider-row">
+                <label for="peak_error-weight">Peak Error:</label>
+                <input type="range" id="peak_error-weight"
+                       min="0" max="1" step="0.05" value="0.0"
+                       oninput="updateWeights()">
+                <span id="peak_error-value">0.00</span>
+            </div>
+<div class="slider-row">
+                <label for="srmse-weight">SRMSE:</label>
+                <input type="range" id="srmse-weight"
+                       min="0" max="1" step="0.05" value="1.0"
+                       oninput="updateWeights()">
+                <span id="srmse-value">1.00</span>
+            </div>
+                    <button class="reset-btn" onclick="resetWeights()">Reset Weights</button>
+                </div>
+                <div class="plot-div"><div>                        <script type="text/javascript">window.PlotlyConfig = {MathJaxConfig: 'local'};</script>
+        <script charset="utf-8" src="https://cdn.plot.ly/plotly-3.3.0.min.js" integrity="sha256-bO3dS6yCpk9aK4gUpNELtCiDeSYvGYnK7jFI58NQnHI=" crossorigin="anonymous"></script>                <div id="config_plot" class="plotly-graph-div" style="height:100%; width:100%;"></div>            <script type="text/javascript">                window.PLOTLYENV=window.PLOTLYENV || {};                                if (document.getElementById("config_plot")) {                    Plotly.newPlot(                        "config_plot",                        [{"marker":{"color":[]},"x":[],"y":[],"type":"bar"}],                        {"template":{"data":{"histogram2dcontour":[{"type":"histogram2dcontour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"choropleth":[{"type":"choropleth","colorbar":{"outlinewidth":0,"ticks":""}}],"histogram2d":[{"type":"histogram2d","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"heatmap":[{"type":"heatmap","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"contourcarpet":[{"type":"contourcarpet","colorbar":{"outlinewidth":0,"ticks":""}}],"contour":[{"type":"contour","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"surface":[{"type":"surface","colorbar":{"outlinewidth":0,"ticks":""},"colorscale":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]]}],"mesh3d":[{"type":"mesh3d","colorbar":{"outlinewidth":0,"ticks":""}}],"scatter":[{"fillpattern":{"fillmode":"overlay","size":10,"solidity":0.2},"type":"scatter"}],"parcoords":[{"type":"parcoords","line":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolargl":[{"type":"scatterpolargl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"bar":[{"error_x":{"color":"#2a3f5f"},"error_y":{"color":"#2a3f5f"},"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"bar"}],"scattergeo":[{"type":"scattergeo","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterpolar":[{"type":"scatterpolar","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"histogram":[{"marker":{"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"histogram"}],"scattergl":[{"type":"scattergl","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatter3d":[{"type":"scatter3d","line":{"colorbar":{"outlinewidth":0,"ticks":""}},"marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermap":[{"type":"scattermap","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattermapbox":[{"type":"scattermapbox","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scatterternary":[{"type":"scatterternary","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"scattercarpet":[{"type":"scattercarpet","marker":{"colorbar":{"outlinewidth":0,"ticks":""}}}],"carpet":[{"aaxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"baxis":{"endlinecolor":"#2a3f5f","gridcolor":"white","linecolor":"white","minorgridcolor":"white","startlinecolor":"#2a3f5f"},"type":"carpet"}],"table":[{"cells":{"fill":{"color":"#EBF0F8"},"line":{"color":"white"}},"header":{"fill":{"color":"#C8D4E3"},"line":{"color":"white"}},"type":"table"}],"barpolar":[{"marker":{"line":{"color":"#E5ECF6","width":0.5},"pattern":{"fillmode":"overlay","size":10,"solidity":0.2}},"type":"barpolar"}],"pie":[{"automargin":true,"type":"pie"}]},"layout":{"autotypenumbers":"strict","colorway":["#636efa","#EF553B","#00cc96","#ab63fa","#FFA15A","#19d3f3","#FF6692","#B6E880","#FF97FF","#FECB52"],"font":{"color":"#2a3f5f"},"hovermode":"closest","hoverlabel":{"align":"left"},"paper_bgcolor":"white","plot_bgcolor":"#E5ECF6","polar":{"bgcolor":"#E5ECF6","angularaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"radialaxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"ternary":{"bgcolor":"#E5ECF6","aaxis":{"gridcolor":"white","linecolor":"white","ticks":""},"baxis":{"gridcolor":"white","linecolor":"white","ticks":""},"caxis":{"gridcolor":"white","linecolor":"white","ticks":""}},"coloraxis":{"colorbar":{"outlinewidth":0,"ticks":""}},"colorscale":{"sequential":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"sequentialminus":[[0.0,"#0d0887"],[0.1111111111111111,"#46039f"],[0.2222222222222222,"#7201a8"],[0.3333333333333333,"#9c179e"],[0.4444444444444444,"#bd3786"],[0.5555555555555556,"#d8576b"],[0.6666666666666666,"#ed7953"],[0.7777777777777778,"#fb9f3a"],[0.8888888888888888,"#fdca26"],[1.0,"#f0f921"]],"diverging":[[0,"#8e0152"],[0.1,"#c51b7d"],[0.2,"#de77ae"],[0.3,"#f1b6da"],[0.4,"#fde0ef"],[0.5,"#f7f7f7"],[0.6,"#e6f5d0"],[0.7,"#b8e186"],[0.8,"#7fbc41"],[0.9,"#4d9221"],[1,"#276419"]]},"xaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"yaxis":{"gridcolor":"white","linecolor":"white","ticks":"","title":{"standoff":15},"zerolinecolor":"white","automargin":true,"zerolinewidth":2},"scene":{"xaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"yaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2},"zaxis":{"backgroundcolor":"#E5ECF6","gridcolor":"white","linecolor":"white","showbackground":true,"ticks":"","zerolinecolor":"white","gridwidth":2}},"shapedefaults":{"line":{"color":"#2a3f5f"}},"annotationdefaults":{"arrowcolor":"#2a3f5f","arrowhead":0,"arrowwidth":1},"geo":{"bgcolor":"white","landcolor":"#E5ECF6","subunitcolor":"white","showland":true,"showlakes":true,"lakecolor":"white"},"title":{"x":0.05},"mapbox":{"style":"light"}}},"yaxis":{"title":{"text":"Weighted Score"},"exponentformat":"e"},"xaxis":{"title":{"text":"Configuration"},"tickangle":-45},"margin":{"l":20,"r":20,"t":60,"b":120},"title":{"text":"Configuration Comparison (Weighted Score)"}},                        {"responsive": true}                    )                };            </script>        </div></div>
+            </div>
+            <script>
+                var data = {"Dataset1": [{"label": "bf=2, st=3, nug=0.4", "metrics": {"RMSE": 1.5529275285740822, "MAE": 1.2248697154914496, "Peak Error": 1.1421182520308668, "SRMSE": 0.28745555950864615}}, {"label": "bf=2, st=3, nug=0.8", "metrics": {"RMSE": 1.5529275286618816, "MAE": 1.2248697154914496, "Peak Error": 1.1421182520308668, "SRMSE": 0.28745555952489826}}, {"label": "bf=2, st=3, nug=1.2", "metrics": {"RMSE": 1.5529275286856545, "MAE": 1.2248697154914496, "Peak Error": 1.1421182520308668, "SRMSE": 0.2874555595292988}}, {"label": "bf=2, st=4, nug=0.4", "metrics": {"RMSE": 1.552927528820731, "MAE": 1.2248697157057353, "Peak Error": 1.1421182520308668, "SRMSE": 0.2874555595543022}}, {"label": "bf=2, st=4, nug=0.8", "metrics": {"RMSE": 1.5529275288312376, "MAE": 1.2248697156819257, "Peak Error": 1.1421182520308668, "SRMSE": 0.287455559556247}}, {"label": "bf=2, st=4, nug=1.2", "metrics": {"RMSE": 1.552927528934726, "MAE": 1.2248697158009734, "Peak Error": 1.1421182520308668, "SRMSE": 0.2874555595754033}}], "Dataset2": [{"label": "bf=2, st=3, nug=0.4", "metrics": {"RMSE": 0.48967424760794487, "MAE": 0.3880375130288983, "Peak Error": 0.4776924425798314, "SRMSE": 0.12505177402138393}}, {"label": "bf=2, st=3, nug=0.8", "metrics": {"RMSE": 0.4896742477180098, "MAE": 0.38803751293842215, "Peak Error": 0.4776924425798314, "SRMSE": 0.12505177404949205}}, {"label": "bf=2, st=3, nug=1.2", "metrics": {"RMSE": 0.4896742474298952, "MAE": 0.38803751274556497, "Peak Error": 0.4776924425798314, "SRMSE": 0.12505177397591405}}, {"label": "bf=2, st=4, nug=0.4", "metrics": {"RMSE": 0.4896742474301707, "MAE": 0.38803751280746973, "Peak Error": 0.4776924425798314, "SRMSE": 0.1250517739759844}}, {"label": "bf=2, st=4, nug=0.8", "metrics": {"RMSE": 0.489674247474993, "MAE": 0.3880375128741364, "Peak Error": 0.4776924425798314, "SRMSE": 0.12505177398743103}}, {"label": "bf=2, st=4, nug=1.2", "metrics": {"RMSE": 0.489674247406112, "MAE": 0.3880375127312793, "Peak Error": 0.4776924425798314, "SRMSE": 0.12505177396984035}}]};
+                var metricNames = ["RMSE", "MAE", "Peak Error", "SRMSE"];
+                var datasetNames = ["Dataset1", "Dataset2"];
+
+                function getWeights() {
+                    return {
+                        'RMSE': parseFloat(document.getElementById('rmse-weight').value),
+'MAE': parseFloat(document.getElementById('mae-weight').value),
+'Peak Error': parseFloat(document.getElementById('peak_error-weight').value),
+'SRMSE': parseFloat(document.getElementById('srmse-weight').value)
+                    };
+                }
+
+                function updateWeights() {
+                    // Update displayed values
+                    document.getElementById('rmse-value').innerText = document.getElementById('rmse-weight').value;
+document.getElementById('mae-value').innerText = document.getElementById('mae-weight').value;
+document.getElementById('peak_error-value').innerText = document.getElementById('peak_error-weight').value;
+document.getElementById('srmse-value').innerText = document.getElementById('srmse-weight').value;
+
+                    var dsName = document.getElementById('dataset-select').value;
+                    var weights = getWeights();
+                    var configs = data[dsName];
+
+                    // Calculate weighted scores
+                    var scored = configs.map(function(c) {
+                        var totalWeight = 0;
+                        var weightedSum = 0;
+                        for (var m in c.metrics) {
+                            var w = weights[m] || 0;
+                            totalWeight += w;
+                            weightedSum += c.metrics[m] * w;
+                        }
+                        var score = totalWeight > 0 ? weightedSum / totalWeight : 0;
+                        return {label: c.label, score: score};
+                    });
+
+                    // Sort by score (lower is better)
+                    scored.sort(function(a, b) { return a.score - b.score; });
+
+                    // Limit to top 20
+                    scored = scored.slice(0, 20);
+
+                    var labels = scored.map(function(s) { return s.label; });
+                    var values = scored.map(function(s) { return s.score; });
+                    var colors = scored.map(function(s, i) {
+                        return i === 0 ? 'gold' : 'steelblue';
+                    });
+
+                    var title = scored.length > 0
+                        ? 'Best: ' + scored[0].label + ' (score: ' + scored[0].score.toExponential(4) + ')'
+                        : 'Configuration Comparison';
+
+                    Plotly.restyle('config_plot', {
+                        x: [labels],
+                        y: [values],
+                        'marker.color': [colors]
+                    });
+
+                    Plotly.relayout('config_plot', {title: title});
+                }
+
+                function resetWeights() {
+                    metricNames.forEach(function(m) {
+                        var id = m.toLowerCase().replace(' ', '_') + '-weight';
+                        var el = document.getElementById(id);
+                        el.value = m === 'SRMSE' ? '1.0' : '0.0';
+                    });
+                    updateWeights();
+                }
+
+                // Initialize
+                updateWeights();
+            </script>
+        </body>
+        </html>
+        

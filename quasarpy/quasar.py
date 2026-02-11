@@ -819,7 +819,9 @@ class Quasar:
             Keys must match column names from the training data ``X``.
 
         constraints : List[ConstraintConfig], optional
-            List of constraints to enforce. Each constraint specifies:
+            List of constraints to enforce. Two modes are available:
+
+            **Threshold-based constraints** (for output constraints):
 
             - ``name``: Human-readable name
             - ``dataset_name``: Which trained dataset to use
@@ -834,6 +836,17 @@ class Quasar:
             - ``threshold``: Value for ``<=``, ``>=``, ``==`` types
             - ``lower``, ``upper``: Bounds for ``'range'`` type
             - ``tolerance``: For equality constraints (default 1e-6)
+
+            **Function-based constraints** (for input, output, or combined):
+
+            - ``name``: Human-readable name
+            - ``func``: Custom function with signature:
+
+              ``func(predictions, X) -> np.ndarray``
+
+              Where ``predictions`` is the dict from ``predict()`` and
+              ``X`` is the input parameter DataFrame. Returns values
+              where ``<= 0`` is feasible.
 
         algorithm : str, optional
             Optimization algorithm. Options:
